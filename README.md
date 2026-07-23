@@ -69,6 +69,7 @@ Docker Compose는 로컬 CSV 키 파일을 Docker secret으로 마운트합니�
 빌드 컨텍스트, Git 또는 일반 환경 변수에 포함되지 않습니다.
 
 ```powershell
+$env:DEPLOYMENT_VERSION = git rev-parse --short HEAD
 docker compose up --build -d
 docker compose ps
 ```
@@ -79,11 +80,17 @@ docker compose ps
 기본 리전은 `ap-northeast-2`입니다. 여러 리전은 `compose.yaml`의
 `AWS_DEV_REGIONS`와 `AWS_PRD_REGIONS`에 쉼표로 구분해 지정합니다.
 
+`DEPLOYMENT_VERSION`에는 Git SHA 또는 이미지 버전처럼 배포마다 달라지는 값을
+사용합니다. Next.js는 이 값을 정적 자산 URL과 클라이언트 탐색 요청에 포함해
+롤링 배포 중 버전 불일치를 감지하고 새 문서로 자동 전환합니다. HTML 문서는
+캐시하지 않고, 콘텐츠 해시가 포함된 JavaScript와 CSS만 장기 캐시합니다.
+
 ## 환경 설정
 
 로컬 개발에서는 정적 키, 임시 세션 키 또는 자격 증명 파일을 사용할 수 있습니다.
 
 ```dotenv
+DEPLOYMENT_VERSION=local
 AWS_DEV_NAME=Development
 AWS_DEV_ACCESS_KEY_ID=
 AWS_DEV_SECRET_ACCESS_KEY=

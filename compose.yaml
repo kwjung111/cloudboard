@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        DEPLOYMENT_VERSION: ${DEPLOYMENT_VERSION:-local}
     image: cloudboard:local
     container_name: cloudboard
     restart: unless-stopped

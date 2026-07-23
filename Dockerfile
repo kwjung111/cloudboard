@@ -9,7 +9,9 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 
 FROM base AS builder
+ARG DEPLOYMENT_VERSION=local
 ENV NODE_ENV=production
+ENV NEXT_DEPLOYMENT_ID=$DEPLOYMENT_VERSION
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
