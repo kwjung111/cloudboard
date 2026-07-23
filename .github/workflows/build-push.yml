@@ -1,0 +1,111 @@
+name: build-push
+
+on:
+  push:
+    branches: ['**']
+
+# 같은 브랜치에 연속 푸시 시 이전 빌드 취소 (latest 태그 경합 방지)
+concurrency:
+  group: build-push-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # 레지스트리 설정이 없거나(포크 등) 기본 브랜치가 아니면 빌드 검증만 수행
+    env:
+      REGISTRY: ${{ vars.HARBOR_REGISTRY }}
+      PROJECT: ${{ vars.HARBOR_PROJECT }}
+      IMAGE_NAME: ${{ vars.IMAGE_NAME || 'cloudboard' }}
+      IS_DEFAULT_BRANCH: ${{ github.ref_name == github.event.repository.default_branch }}
+    outputs:
+      pushed: ${{ steps.meta.outputs.push }}
+      short_sha: ${{ steps.meta.outputs.short }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve image tags
+        id: meta
+        run: |
+          SHORT="${GITHUB_SHA::7}"
+          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
+          if [ -n "$REGISTRY" ] && [ -n "$PROJECT" ] && [ "$IS_DEFAULT_BRANCH" = "true" ]; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+            echo "tags=$REGISTRY/$PROJECT/$IMAGE_NAME:latest,$REGISTRY/$PROJECT/$IMAGE_NAME:$SHORT" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::레지스트리 변수 미설정 또는 기본 브랜치 아님 - 빌드 검증만 수행 (푸시 생략)"
+            echo "push=false" >> "$GITHUB_OUTPUT"
+            echo "tags=$IMAGE_NAME:ci" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to registry
+        if: steps.meta.outputs.push == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_ROBOT_USER }}
+          password: ${{ secrets.HARBOR_ROBOT_SECRET }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: ${{ steps.meta.outputs.push == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # 매니페스트 저장소의 이미지 태그를 새 SHA로 갱신 (GitOps 배포 트리거)
+  # MANIFEST_REPO 변수 미설정 시 이 잡은 건너뜀 (배포 대상이 정해지면 변수만 추가)
+  update-manifest:
+    runs-on: ubuntu-latest
+    needs: build
+    if: needs.build.outputs.pushed == 'true' && vars.MANIFEST_REPO != ''
+    env:
+      IMAGE_NAME: ${{ vars.IMAGE_NAME || 'cloudboard' }}
+      MANIFEST_PATH: ${{ vars.MANIFEST_PATH || 'cloudboard/docker-compose.yml' }}
+      SHORT_SHA: ${{ needs.build.outputs.short_sha }}
+    steps:
+      - name: Checkout manifest repo
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.MANIFEST_REPO }}
+          token: ${{ secrets.MANIFEST_REPO_TOKEN }}
+
+      - name: Bump image tag
+        id: bump
+        run: |
+          sed -i -E "s|(image:[[:space:]]*[^[:space:]]+/${IMAGE_NAME}):[^[:space:]]+|\1:${SHORT_SHA}|" "$MANIFEST_PATH"
+          # 교체 검증: sed 미탐(파일 형식 변경 등)이 '변경 없음'으로 위장되는 것 방지
+          if ! grep -q "/${IMAGE_NAME}:${SHORT_SHA}" "$MANIFEST_PATH"; then
+            echo "::error::이미지 태그 교체 실패 - ${MANIFEST_PATH}의 image 라인 형식을 확인하세요"
+            exit 1
+          fi
+          if git diff --quiet; then
+            echo "::notice::이미지 태그 변경 없음 (이미 ${SHORT_SHA})"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff --stat
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$MANIFEST_PATH"
+          git commit -m "deploy: ${IMAGE_NAME} ${SHORT_SHA} (cloudboard CI)"
+          # 경합(동시 커밋) 시 rebase 후 재시도 - 이미지만 있고 deploy 커밋이 누락되는 것 방지
+          BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          for i in 1 2 3; do
+            if git push origin "$BRANCH"; then exit 0; fi
+            echo "push 실패 (${i}/3) - rebase 후 재시도"
+            git pull --rebase origin "$BRANCH"
+          done
+          echo "::error::매니페스트 push 3회 실패"
+          exit 1
