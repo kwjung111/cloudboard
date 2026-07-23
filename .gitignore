@@ -35,6 +35,8 @@ yarn-error.log*
 *_accessKeys.csv
 *access-keys*.csv
 *credentials*.csv
+/credentials/*
+!/credentials/.gitkeep
 
 # vercel
 .vercel

@@ -21,6 +21,7 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
+ENV CLOUDBOARD_ENVIRONMENTS_FILE=/app/config/environments.json
 WORKDIR /app
 
 RUN groupadd --system --gid 1001 nodejs \
@@ -28,6 +29,7 @@ RUN groupadd --system --gid 1001 nodejs \
 
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/config ./config
 
 USER nextjs
 EXPOSE 3000

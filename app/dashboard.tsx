@@ -6,13 +6,10 @@ import type {
   CommitmentMetricSet,
   EnvironmentId,
   EnvironmentReport,
+  EnvironmentSummary,
+  EnvironmentsResponse,
   MetricValue,
 } from "../lib/cloudboard";
-
-const environments: { id: EnvironmentId; label: string; short: string }[] = [
-  { id: "dev", label: "Development", short: "DEV" },
-  { id: "prd", label: "Production", short: "PRD" },
-];
 
 const coverageLabels = {
   good: "안정",
@@ -140,7 +137,7 @@ function EmptyState({
   environment: EnvironmentId;
   message: string;
 }) {
-  const prefix = `AWS_${environment.toUpperCase()}`;
+  const prefix = `AWS_${environment.replaceAll("-", "_").toUpperCase()}`;
   return (
     <section className="empty-state">
       <span className="empty-eyebrow">환경 설정 필요</span>
@@ -158,11 +155,26 @@ function EmptyState({
   );
 }
 
+function NoEnvironmentsState() {
+  return (
+    <section className="empty-state">
+      <span className="empty-eyebrow">환경 설정 필요</span>
+      <h2>등록된 AWS 환경이 없습니다.</h2>
+      <p>
+        <code>config/environments.json</code>에 환경을 추가하고 읽기 전용 자격
+        증명 파일을 Secret 경로로 연결하세요.
+      </p>
+    </section>
+  );
+}
+
 export function CloudBoardDashboard() {
-  const [environment, setEnvironment] = useState<EnvironmentId>("dev");
+  const [environments, setEnvironments] = useState<EnvironmentSummary[]>([]);
+  const [environment, setEnvironment] = useState<EnvironmentId | null>(null);
   const [reports, setReports] = useState<
     Partial<Record<EnvironmentId, EnvironmentReport>>
   >({});
+  const [environmentListLoading, setEnvironmentListLoading] = useState(true);
   const [loading, setLoading] = useState<EnvironmentId | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [token, setToken] = useState(() =>
@@ -170,6 +182,43 @@ export function CloudBoardDashboard() {
       ? ""
       : (sessionStorage.getItem("cloudboard-access-token") ?? ""),
   );
+
+  const loadEnvironments = useCallback(async () => {
+    setEnvironmentListLoading(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/environments", {
+        headers: token ? { "x-cloudboard-token": token } : {},
+        cache: "no-store",
+      });
+      const body = (await response.json()) as EnvironmentsResponse | ApiError;
+      if (!response.ok) {
+        throw new Error(
+          "error" in body ? body.error : "환경 목록 조회에 실패했습니다.",
+        );
+      }
+      if (!("environments" in body)) {
+        throw new Error("환경 목록 조회에 실패했습니다.");
+      }
+      setEnvironments(body.environments);
+      setEnvironment((current) =>
+        current &&
+        body.environments.some((environmentItem) => environmentItem.id === current)
+          ? current
+          : (body.environments[0]?.id ?? null),
+      );
+    } catch (loadError) {
+      setEnvironments([]);
+      setEnvironment(null);
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "환경 목록 조회에 실패했습니다.",
+      );
+    } finally {
+      setEnvironmentListLoading(false);
+    }
+  }, [token]);
 
   const loadReport = useCallback(
     async (environmentId: EnvironmentId, refresh = false) => {
@@ -206,7 +255,14 @@ export function CloudBoardDashboard() {
   );
 
   useEffect(() => {
-    if (!reports[environment]) {
+    const timeoutId = window.setTimeout(() => {
+      void loadEnvironments();
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [loadEnvironments]);
+
+  useEffect(() => {
+    if (environment && !reports[environment]) {
       const timeoutId = window.setTimeout(() => {
         void loadReport(environment);
       }, 0);
@@ -214,7 +270,7 @@ export function CloudBoardDashboard() {
     }
   }, [environment, loadReport, reports]);
 
-  const report = reports[environment];
+  const report = environment ? reports[environment] : undefined;
   const summary = useMemo(() => {
     if (!report) {
       return null;
@@ -335,10 +391,21 @@ export function CloudBoardDashboard() {
             <button
               className="refresh-button"
               type="button"
-              onClick={() => void loadReport(environment, true)}
-              disabled={loading !== null}
+              onClick={() => {
+                void loadEnvironments();
+                if (environment) {
+                  void loadReport(environment, true);
+                }
+              }}
+              disabled={loading !== null || environmentListLoading}
             >
-              <span className={loading ? "refresh-icon spinning" : "refresh-icon"}>
+              <span
+                className={
+                  loading || environmentListLoading
+                    ? "refresh-icon spinning"
+                    : "refresh-icon"
+                }
+              >
                 ↻
               </span>
               새로고침
@@ -352,11 +419,18 @@ export function CloudBoardDashboard() {
               <button
                 key={item.id}
                 type="button"
-                className={environment === item.id ? "selected" : ""}
+                className={[
+                  environment === item.id ? "selected" : "",
+                  item.configured ? "" : "unconfigured",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
                 onClick={() => setEnvironment(item.id)}
               >
-                <span>{item.short}</span>
-                {reports[item.id]?.name ?? item.label}
+                <span>
+                  {item.group} · {item.id.toUpperCase()}
+                </span>
+                {item.name}
               </button>
             ))}
           </div>
@@ -364,7 +438,15 @@ export function CloudBoardDashboard() {
             <span
               className={`status-indicator ${report?.status ?? "loading"}`}
             />
-            <span>{report ? formatAccountId(report.accountId) : "연결 중"}</span>
+            <span>
+              {report
+                ? formatAccountId(report.accountId)
+                : environmentListLoading
+                  ? "환경 조회 중"
+                  : environment
+                    ? "연결 중"
+                    : "환경 없음"}
+            </span>
             {report && report.regions.length > 0 && (
               <>
                 <span className="divider" />
@@ -380,22 +462,34 @@ export function CloudBoardDashboard() {
               <strong>데이터를 불러오지 못했습니다</strong>
               <span>{error}</span>
             </div>
-            <button type="button" onClick={() => void loadReport(environment)}>
+            <button
+              type="button"
+              onClick={() => {
+                void loadEnvironments();
+                if (environment) {
+                  void loadReport(environment);
+                }
+              }}
+            >
               다시 시도
             </button>
           </div>
         )}
 
-        {loading === environment && !report ? (
+        {environmentListLoading ? (
+          <LoadingState />
+        ) : !environment && environments.length === 0 ? (
+          <NoEnvironmentsState />
+        ) : loading === environment && !report ? (
           <LoadingState />
         ) : report?.status === "unconfigured" ? (
           <EmptyState
-            environment={environment}
+            environment={report.id}
             message={report.error ?? "AWS 환경 설정이 필요합니다."}
           />
         ) : report?.status === "failed" ? (
           <EmptyState
-            environment={environment}
+            environment={report.id}
             message={report.error ?? "AWS 연결을 확인해 주세요."}
           />
         ) : report && summary ? (

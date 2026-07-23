@@ -1,12 +1,14 @@
+import { authorizeRequest } from "../../../lib/api-auth";
 import {
   getEnvironmentConfig,
-  getEnvironmentName,
+  getEnvironmentSummary,
 } from "../../../lib/aws-config";
 import { scanEnvironment } from "../../../lib/aws-scanner";
 import type {
   ApiError,
   EnvironmentId,
   EnvironmentReport,
+  EnvironmentSummary,
 } from "../../../lib/cloudboard";
 
 export const dynamic = "force-dynamic";
@@ -18,43 +20,64 @@ const cache = new Map<
 >();
 const cacheTtlMs = 5 * 60 * 1000;
 
-function validEnvironment(value: string | null): value is EnvironmentId {
-  return value === "dev" || value === "prd";
-}
+function unavailableReport(
+  environment: EnvironmentSummary,
+  error: string,
+): EnvironmentReport {
+  const now = new Date();
+  const end = new Date(now);
+  end.setUTCHours(0, 0, 0, 0);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - 30);
 
-function constantTimeEqual(left: string, right: string) {
-  const length = Math.max(left.length, right.length);
-  let result = left.length ^ right.length;
-  for (let index = 0; index < length; index += 1) {
-    result |=
-      (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
-  }
-  return result === 0;
-}
-
-function unauthorized(): Response {
-  const body: ApiError = {
-    error: "대시보드 접근 토큰을 확인해 주세요.",
-    code: "UNAUTHORIZED",
+  return {
+    id: environment.id,
+    name: environment.name,
+    accountId: null,
+    regions: environment.regions,
+    status: "unconfigured",
+    generatedAt: now.toISOString(),
+    coverageWindow: {
+      start: start.toISOString().slice(0, 10),
+      end: end.toISOString().slice(0, 10),
+    },
+    services: [],
+    metrics: {
+      ri: {
+        coverage: { value: null, status: "unavailable", message: null },
+        utilization: { value: null, status: "unavailable", message: null },
+        netSavingsUsd: { value: null, status: "unavailable", message: null },
+      },
+      savingsPlans: {
+        coverage: { value: null, status: "unavailable", message: null },
+        utilization: { value: null, status: "unavailable", message: null },
+        netSavingsUsd: { value: null, status: "unavailable", message: null },
+      },
+    },
+    reservations: [],
+    savingsPlans: [],
+    findings: [],
+    error,
   };
-  return Response.json(body, { status: 401 });
+}
+
+function configurationError(): Response {
+  const body: ApiError = {
+    error: "환경 설정 파일을 확인해 주세요.",
+    code: "CONFIGURATION_ERROR",
+  };
+  return Response.json(body, { status: 500 });
 }
 
 export async function GET(request: Request) {
-  const expectedToken = process.env.CLOUDBOARD_ACCESS_TOKEN?.trim();
-  if (
-    expectedToken &&
-    !constantTimeEqual(
-      request.headers.get("x-cloudboard-token") ?? "",
-      expectedToken,
-    )
-  ) {
-    return unauthorized();
+  const unauthorized = authorizeRequest(request);
+  if (unauthorized) {
+    return unauthorized;
   }
 
   const url = new URL(request.url);
   const environmentId = url.searchParams.get("environment");
-  if (!validEnvironment(environmentId)) {
+  if (!environmentId) {
     const body: ApiError = {
       error: "조회할 환경을 선택해 주세요.",
       code: "INVALID_ENVIRONMENT",
@@ -62,53 +85,64 @@ export async function GET(request: Request) {
     return Response.json(body, { status: 400 });
   }
 
+  let environment: EnvironmentSummary | null;
+  try {
+    environment = getEnvironmentSummary(environmentId);
+  } catch (error) {
+    console.error(
+      "CloudBoard environment configuration failed",
+      error instanceof Error ? { name: error.name, message: error.message } : {},
+    );
+    return configurationError();
+  }
+
+  if (!environment) {
+    const body: ApiError = {
+      error: "등록되지 않은 환경입니다.",
+      code: "INVALID_ENVIRONMENT",
+    };
+    return Response.json(body, { status: 400 });
+  }
+
   const forceRefresh = url.searchParams.get("refresh") === "true";
   const cached = cache.get(environmentId);
-  if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
+  if (
+    !forceRefresh &&
+    cached &&
+    cached.expiresAt > Date.now() &&
+    cached.report.name === environment.name &&
+    cached.report.regions.join(",") === environment.regions.join(",")
+  ) {
     return Response.json(cached.report, {
       headers: { "Cache-Control": "no-store" },
     });
   }
 
-  const config = getEnvironmentConfig(environmentId);
+  let config;
+  try {
+    config = getEnvironmentConfig(environmentId);
+  } catch (error) {
+    console.error(
+      "CloudBoard credentials configuration failed",
+      error instanceof Error ? { name: error.name, message: error.message } : {},
+    );
+    return Response.json(
+      unavailableReport(
+        environment,
+        "이 환경의 AWS 자격 증명 파일 형식을 확인해 주세요.",
+      ),
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
   if (!config) {
-    const now = new Date();
-    const end = new Date(now);
-    end.setUTCHours(0, 0, 0, 0);
-    const start = new Date(end);
-    start.setUTCDate(start.getUTCDate() - 30);
-    const report: EnvironmentReport = {
-      id: environmentId,
-      name: getEnvironmentName(environmentId),
-      accountId: null,
-      regions: [],
-      status: "unconfigured",
-      generatedAt: now.toISOString(),
-      coverageWindow: {
-        start: start.toISOString().slice(0, 10),
-        end: end.toISOString().slice(0, 10),
-      },
-      services: [],
-      metrics: {
-        ri: {
-          coverage: { value: null, status: "unavailable", message: null },
-          utilization: { value: null, status: "unavailable", message: null },
-          netSavingsUsd: { value: null, status: "unavailable", message: null },
-        },
-        savingsPlans: {
-          coverage: { value: null, status: "unavailable", message: null },
-          utilization: { value: null, status: "unavailable", message: null },
-          netSavingsUsd: { value: null, status: "unavailable", message: null },
-        },
-      },
-      reservations: [],
-      savingsPlans: [],
-      findings: [],
-      error: "이 환경의 AWS 읽기 전용 자격 증명이 설정되지 않았습니다.",
-    };
-    return Response.json(report, {
-      headers: { "Cache-Control": "no-store" },
-    });
+    return Response.json(
+      unavailableReport(
+        environment,
+        "이 환경의 AWS 읽기 전용 자격 증명이 설정되지 않았습니다.",
+      ),
+      { headers: { "Cache-Control": "no-store" } },
+    );
   }
 
   try {

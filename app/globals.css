@@ -290,12 +290,17 @@ summary {
 .environment-tabs {
   display: flex;
   align-self: stretch;
+  min-width: 0;
   gap: 3px;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .environment-tabs button {
   position: relative;
+  flex: 0 0 auto;
   min-width: 132px;
+  max-width: 210px;
   padding: 0 18px;
   border: 0;
   color: var(--ink-muted);
@@ -303,6 +308,10 @@ summary {
   text-align: left;
   font-size: 12px;
   cursor: pointer;
+}
+
+.environment-tabs button.unconfigured {
+  opacity: 0.62;
 }
 
 .environment-tabs button span {

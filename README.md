@@ -77,9 +77,6 @@ docker compose ps
 대시보드는 `http://localhost:3000`, 상태 확인은
 `http://localhost:3000/api/health`에서 제공합니다.
 
-기본 리전은 `ap-northeast-2`입니다. 여러 리전은 `compose.yaml`의
-`AWS_DEV_REGIONS`와 `AWS_PRD_REGIONS`에 쉼표로 구분해 지정합니다.
-
 `DEPLOYMENT_VERSION`에는 Git SHA 또는 이미지 버전처럼 배포마다 달라지는 값을
 사용합니다. Next.js는 이 값을 정적 자산 URL과 클라이언트 탐색 요청에 포함해
 롤링 배포 중 버전 불일치를 감지하고 새 문서로 자동 전환합니다. HTML 문서는
@@ -87,10 +84,56 @@ docker compose ps
 
 ## 환경 설정
 
-로컬 개발에서는 정적 키, 임시 세션 키 또는 자격 증명 파일을 사용할 수 있습니다.
+환경 목록은 [config/environments.json](./config/environments.json)에서 관리합니다.
+애플리케이션은 이 파일을 요청 시점에 다시 읽으므로 코드 빌드나 서버 재시작 없이
+환경을 추가하고 화면의 `새로고침`을 누르면 반영됩니다.
+
+```json
+{
+  "environments": [
+    {
+      "id": "b2b-dev",
+      "name": "B2B Development",
+      "group": "B2B",
+      "regions": ["ap-northeast-2"],
+      "credentialsFile": "/run/cloudboard-credentials/b2b-dev.csv"
+    },
+    {
+      "id": "b2c-prd",
+      "name": "B2C Production",
+      "group": "B2C",
+      "regions": ["ap-northeast-2", "us-east-1"],
+      "credentialsFile": "/run/cloudboard-credentials/b2c-prd.csv"
+    }
+  ]
+}
+```
+
+자격 증명 CSV는 로컬 `credentials` 디렉터리에 저장합니다. 이 디렉터리의 파일은
+Git과 Docker 이미지에서 제외되며 컨테이너의 `/run/cloudboard-credentials`에
+읽기 전용으로 마운트됩니다.
+
+```text
+credentials/
+  b2b-dev.csv
+  b2b-prd.csv
+  b2c-dev.csv
+  b2c-prd.csv
+```
+
+CSV 형식은 AWS가 발급하는 `Access key ID,Secret access key` 헤더 형식을
+사용합니다. 환경 ID는 소문자, 숫자, 하이픈 조합으로 지정하며 개수 제한은
+없습니다. `group`은 화면에서 B2B/B2C 같은 업무 영역을 구분할 때 사용합니다.
+
+Kubernetes에서는 JSON 파일 대신 `CLOUDBOARD_ENVIRONMENTS_JSON`을 ConfigMap으로
+주입할 수 있습니다. `credentialsFile`은 Kubernetes Secret 또는 외부 Secret
+Store가 마운트한 경로를 지정합니다.
+
+기존 환경 변수 방식도 호환됩니다.
 
 ```dotenv
 DEPLOYMENT_VERSION=local
+CLOUDBOARD_ENVIRONMENTS_FILE=./config/environments.json
 AWS_DEV_NAME=Development
 AWS_DEV_ACCESS_KEY_ID=
 AWS_DEV_SECRET_ACCESS_KEY=

@@ -1,4 +1,16 @@
-export type EnvironmentId = "dev" | "prd";
+export type EnvironmentId = string;
+
+export interface EnvironmentSummary {
+  id: EnvironmentId;
+  name: string;
+  group: string;
+  regions: string[];
+  configured: boolean;
+}
+
+export interface EnvironmentsResponse {
+  environments: EnvironmentSummary[];
+}
 
 export type ServiceKey =
   | "ec2"
@@ -99,5 +111,9 @@ export interface EnvironmentReport {
 
 export interface ApiError {
   error: string;
-  code: "UNAUTHORIZED" | "INVALID_ENVIRONMENT" | "INTERNAL_ERROR";
+  code:
+    | "UNAUTHORIZED"
+    | "INVALID_ENVIRONMENT"
+    | "CONFIGURATION_ERROR"
+    | "INTERNAL_ERROR";
 }
