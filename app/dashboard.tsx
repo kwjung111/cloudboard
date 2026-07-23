@@ -4,8 +4,10 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
+  type KeyboardEvent,
 } from "react";
 import type {
   ApiError,
@@ -194,6 +196,14 @@ function EnvironmentManager({
   const [form, setForm] = useState(emptyEnvironmentForm);
   const [saving, setSaving] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    closeButtonRef.current?.focus();
+
+    return () => previouslyFocused?.focus();
+  }, []);
 
   const headers = {
     "Content-Type": "application/json",
@@ -267,6 +277,42 @@ function EnvironmentManager({
     }
   }
 
+  function handleDialogKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+
+    if (event.key !== "Tab") {
+      return;
+    }
+
+    const focusableElements = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), [href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter((element) => element.getClientRects().length > 0);
+    const firstElement = focusableElements[0];
+    const lastElement = focusableElements.at(-1);
+
+    if (
+      event.shiftKey &&
+      document.activeElement === firstElement &&
+      lastElement
+    ) {
+      event.preventDefault();
+      lastElement.focus();
+    } else if (
+      !event.shiftKey &&
+      document.activeElement === lastElement &&
+      firstElement
+    ) {
+      event.preventDefault();
+      firstElement.focus();
+    }
+  }
+
   return (
     <div className="manager-backdrop" role="presentation">
       <section
@@ -274,6 +320,7 @@ function EnvironmentManager({
         role="dialog"
         aria-modal="true"
         aria-labelledby="environment-manager-title"
+        onKeyDown={handleDialogKeyDown}
       >
         <header className="manager-heading">
           <div>
@@ -281,6 +328,7 @@ function EnvironmentManager({
             <h2 id="environment-manager-title">AWS 환경 관리</h2>
           </div>
           <button
+            ref={closeButtonRef}
             className="manager-close"
             type="button"
             onClick={onClose}
