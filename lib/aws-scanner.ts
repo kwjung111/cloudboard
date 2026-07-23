@@ -1,7 +1,9 @@
 import {
   CostExplorerClient,
   GetReservationCoverageCommand,
+  GetReservationUtilizationCommand,
   GetSavingsPlansCoverageCommand,
+  GetSavingsPlansUtilizationCommand,
 } from "@aws-sdk/client-cost-explorer";
 import {
   DescribeInstancesCommand,
@@ -45,9 +47,13 @@ import {
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import type { AwsEnvironmentConfig } from "./aws-config";
 import type {
+  CommitmentMetricSet,
+  CommitmentMetrics,
   CoverageLevel,
   EnvironmentReport,
   Finding,
+  MetricValue,
+  ReservationSummary,
   ResourceBreakdown,
   SavingsPlanSummary,
   ServiceCoverage,
@@ -58,6 +64,7 @@ interface InventoryResult {
   running: number;
   reserved: number;
   breakdown: ResourceBreakdown[];
+  reservations: ReservationSummary[];
 }
 
 interface ServiceDefinition {
@@ -109,16 +116,34 @@ function toPercentage(value: string | undefined) {
     : null;
 }
 
+function toCurrency(value: string | undefined) {
+  if (value === undefined) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : null;
+}
+
 function formatDate(date: Date) {
   return date.toISOString().slice(0, 10);
 }
 
 function coverageWindow() {
   const end = new Date();
-  end.setUTCDate(end.getUTCDate() - 1);
+  end.setUTCHours(0, 0, 0, 0);
   const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - 29);
+  start.setUTCDate(start.getUTCDate() - 30);
   return { start: formatDate(start), end: formatDate(end) };
+}
+
+function toIsoString(value: Date | undefined) {
+  return value ? value.toISOString() : null;
+}
+
+function endFromDuration(start: Date | undefined, duration: number | undefined) {
+  return start && duration
+    ? new Date(start.getTime() + duration * 1_000).toISOString()
+    : null;
 }
 
 function errorMessage(error: unknown) {
@@ -148,6 +173,68 @@ function errorMessage(error: unknown) {
   return "AWS 조회 중 오류가 발생했습니다.";
 }
 
+function metricFailure(error: unknown): MetricValue {
+  const name =
+    error instanceof Error
+      ? error.name
+      : typeof error === "object" && error && "name" in error
+        ? String(error.name)
+        : "";
+
+  if (name === "DataUnavailableException") {
+    return {
+      value: null,
+      status: "pending",
+      message: "AWS 비용 데이터 집계 대기 중입니다.",
+    };
+  }
+
+  return {
+    value: null,
+    status: "error",
+    message: errorMessage(error),
+  };
+}
+
+function metricValue(value: number | null): MetricValue {
+  return value === null
+    ? {
+        value: null,
+        status: "unavailable",
+        message: "집계할 사용 데이터가 없습니다.",
+      }
+    : { value, status: "ready", message: null };
+}
+
+function emptyMetricSet(message: string): CommitmentMetricSet {
+  const value = (): MetricValue => ({
+    value: null,
+    status: "unavailable",
+    message,
+  });
+  return {
+    coverage: value(),
+    utilization: value(),
+    netSavingsUsd: value(),
+  };
+}
+
+function failedMetricSet(error: unknown): CommitmentMetricSet {
+  const failure = metricFailure(error);
+  return {
+    coverage: failure,
+    utilization: { ...failure },
+    netSavingsUsd: { ...failure },
+  };
+}
+
+function emptyCommitmentMetrics(): CommitmentMetrics {
+  return {
+    ri: emptyMetricSet("AWS 연결 후 조회됩니다."),
+    savingsPlans: emptyMetricSet("AWS 연결 후 조회됩니다."),
+  };
+}
+
 function mergeBreakdown(
   target: Map<string, ResourceBreakdown>,
   region: string,
@@ -167,12 +254,16 @@ function mergeBreakdown(
   target.set(key, current);
 }
 
-function resultFromBreakdown(breakdown: Map<string, ResourceBreakdown>) {
+function resultFromBreakdown(
+  breakdown: Map<string, ResourceBreakdown>,
+  reservations: ReservationSummary[],
+) {
   const rows = [...breakdown.values()];
   return {
     running: rows.reduce((sum, row) => sum + row.running, 0),
     reserved: rows.reduce((sum, row) => sum + row.reserved, 0),
     breakdown: rows,
+    reservations,
   };
 }
 
@@ -186,6 +277,7 @@ async function scanEc2(
     maxAttempts: 2,
   });
   const breakdown = new Map<string, ResourceBreakdown>();
+  const reservationSummaries: ReservationSummary[] = [];
   let nextToken: string | undefined;
 
   do {
@@ -222,8 +314,18 @@ async function scanEc2(
       0,
       reservation.InstanceCount ?? 0,
     );
+    reservationSummaries.push({
+      id: reservation.ReservedInstancesId ?? "unknown",
+      kind: "ri",
+      service: "Amazon EC2",
+      region,
+      family: reservation.InstanceType ?? "unknown",
+      quantity: reservation.InstanceCount ?? 0,
+      start: toIsoString(reservation.Start),
+      end: toIsoString(reservation.End),
+    });
   }
-  return resultFromBreakdown(breakdown);
+  return resultFromBreakdown(breakdown, reservationSummaries);
 }
 
 async function scanRds(
@@ -236,6 +338,7 @@ async function scanRds(
     maxAttempts: 2,
   });
   const breakdown = new Map<string, ResourceBreakdown>();
+  const reservationSummaries: ReservationSummary[] = [];
   let marker: string | undefined;
 
   do {
@@ -269,12 +372,22 @@ async function scanRds(
           0,
           reservation.DBInstanceCount ?? 0,
         );
+        reservationSummaries.push({
+          id: reservation.ReservedDBInstanceId ?? "unknown",
+          kind: "ri",
+          service: "Amazon RDS",
+          region,
+          family: reservation.DBInstanceClass ?? "unknown",
+          quantity: reservation.DBInstanceCount ?? 0,
+          start: toIsoString(reservation.StartTime),
+          end: endFromDuration(reservation.StartTime, reservation.Duration),
+        });
       }
     }
     marker = response.Marker;
   } while (marker);
 
-  return resultFromBreakdown(breakdown);
+  return resultFromBreakdown(breakdown, reservationSummaries);
 }
 
 async function scanElastiCache(
@@ -287,6 +400,7 @@ async function scanElastiCache(
     maxAttempts: 2,
   });
   const breakdown = new Map<string, ResourceBreakdown>();
+  const reservationSummaries: ReservationSummary[] = [];
   let marker: string | undefined;
 
   do {
@@ -320,12 +434,22 @@ async function scanElastiCache(
           0,
           reservation.CacheNodeCount ?? 0,
         );
+        reservationSummaries.push({
+          id: reservation.ReservedCacheNodeId ?? "unknown",
+          kind: "ri",
+          service: "Amazon ElastiCache",
+          region,
+          family: reservation.CacheNodeType ?? "unknown",
+          quantity: reservation.CacheNodeCount ?? 0,
+          start: toIsoString(reservation.StartTime),
+          end: endFromDuration(reservation.StartTime, reservation.Duration),
+        });
       }
     }
     marker = response.Marker;
   } while (marker);
 
-  return resultFromBreakdown(breakdown);
+  return resultFromBreakdown(breakdown, reservationSummaries);
 }
 
 async function scanRedshift(
@@ -338,6 +462,7 @@ async function scanRedshift(
     maxAttempts: 2,
   });
   const breakdown = new Map<string, ResourceBreakdown>();
+  const reservationSummaries: ReservationSummary[] = [];
   let marker: string | undefined;
 
   do {
@@ -370,12 +495,22 @@ async function scanRedshift(
           0,
           reservation.NodeCount ?? 0,
         );
+        reservationSummaries.push({
+          id: reservation.ReservedNodeId ?? "unknown",
+          kind: "ri",
+          service: "Amazon Redshift",
+          region,
+          family: reservation.NodeType ?? "unknown",
+          quantity: reservation.NodeCount ?? 0,
+          start: toIsoString(reservation.StartTime),
+          end: endFromDuration(reservation.StartTime, reservation.Duration),
+        });
       }
     }
     marker = response.Marker;
   } while (marker);
 
-  return resultFromBreakdown(breakdown);
+  return resultFromBreakdown(breakdown, reservationSummaries);
 }
 
 function chunks<T>(values: T[], size: number) {
@@ -395,6 +530,7 @@ async function scanOpenSearch(
     maxAttempts: 2,
   });
   const breakdown = new Map<string, ResourceBreakdown>();
+  const reservationSummaries: ReservationSummary[] = [];
   const domains = await client.send(new ListDomainNamesCommand({}));
   const names = (domains.DomainNames ?? [])
     .map((domain) => domain.DomainName)
@@ -433,12 +569,22 @@ async function scanOpenSearch(
           0,
           reservation.InstanceCount ?? 0,
         );
+        reservationSummaries.push({
+          id: reservation.ReservedInstanceId ?? "unknown",
+          kind: "ri",
+          service: "Amazon OpenSearch",
+          region,
+          family: reservation.InstanceType ?? "unknown",
+          quantity: reservation.InstanceCount ?? 0,
+          start: toIsoString(reservation.StartTime),
+          end: endFromDuration(reservation.StartTime, reservation.Duration),
+        });
       }
     }
     nextToken = response.NextToken;
   } while (nextToken);
 
-  return resultFromBreakdown(breakdown);
+  return resultFromBreakdown(breakdown, reservationSummaries);
 }
 
 const inventoryScanners: Record<
@@ -484,12 +630,6 @@ async function savingsPlansCoverage(
   const response = await client.send(
     new GetSavingsPlansCoverageCommand({
       TimePeriod: { Start: window.start, End: window.end },
-      Filter: {
-        Dimensions: {
-          Key: "SERVICE",
-          Values: ["Amazon Elastic Compute Cloud - Compute"],
-        },
-      },
       Metrics: ["SpendCoveredBySavingsPlans"],
     }),
   );
@@ -497,6 +637,99 @@ async function savingsPlansCoverage(
   return toPercentage(
     response.SavingsPlansCoverages?.[0]?.Coverage?.CoveragePercentage,
   );
+}
+
+async function reservationMetrics(
+  client: CostExplorerClient,
+  window: { start: string; end: string },
+): Promise<CommitmentMetricSet> {
+  const [coverageResult, utilizationResult] = await Promise.allSettled([
+    client.send(
+      new GetReservationCoverageCommand({
+        TimePeriod: { Start: window.start, End: window.end },
+        Metrics: ["Hour"],
+      }),
+    ),
+    client.send(
+      new GetReservationUtilizationCommand({
+        TimePeriod: { Start: window.start, End: window.end },
+      }),
+    ),
+  ]);
+
+  const coverage =
+    coverageResult.status === "fulfilled"
+      ? metricValue(
+          toPercentage(
+            coverageResult.value.Total?.CoverageHours
+              ?.CoverageHoursPercentage ??
+              coverageResult.value.CoveragesByTime?.[0]?.Total?.CoverageHours
+                ?.CoverageHoursPercentage,
+          ),
+        )
+      : metricFailure(coverageResult.reason);
+
+  if (utilizationResult.status === "rejected") {
+    const failure = metricFailure(utilizationResult.reason);
+    return {
+      coverage,
+      utilization: failure,
+      netSavingsUsd: { ...failure },
+    };
+  }
+
+  return {
+    coverage,
+    utilization: metricValue(
+      toPercentage(utilizationResult.value.Total?.UtilizationPercentage),
+    ),
+    netSavingsUsd: metricValue(
+      toCurrency(
+        utilizationResult.value.Total?.NetRISavings ??
+          utilizationResult.value.Total?.RealizedSavings,
+      ),
+    ),
+  };
+}
+
+async function savingsPlansMetrics(
+  client: CostExplorerClient,
+  window: { start: string; end: string },
+): Promise<CommitmentMetricSet> {
+  const [coverageResult, utilizationResult] = await Promise.allSettled([
+    savingsPlansCoverage(client, window),
+    client.send(
+      new GetSavingsPlansUtilizationCommand({
+        TimePeriod: { Start: window.start, End: window.end },
+      }),
+    ),
+  ]);
+
+  const coverage =
+    coverageResult.status === "fulfilled"
+      ? metricValue(coverageResult.value)
+      : metricFailure(coverageResult.reason);
+
+  if (utilizationResult.status === "rejected") {
+    const failure = metricFailure(utilizationResult.reason);
+    return {
+      coverage,
+      utilization: failure,
+      netSavingsUsd: { ...failure },
+    };
+  }
+
+  return {
+    coverage,
+    utilization: metricValue(
+      toPercentage(
+        utilizationResult.value.Total?.Utilization?.UtilizationPercentage,
+      ),
+    ),
+    netSavingsUsd: metricValue(
+      toCurrency(utilizationResult.value.Total?.Savings?.NetSavings),
+    ),
+  };
 }
 
 async function listSavingsPlans(config: AwsEnvironmentConfig) {
@@ -519,9 +752,11 @@ async function listSavingsPlans(config: AwsEnvironmentConfig) {
     for (const plan of response.savingsPlans ?? []) {
       plans.push({
         id: plan.savingsPlanId ?? "unknown",
+        kind: "savings-plan",
         type: plan.savingsPlanType ?? "unknown",
         region: plan.region ?? null,
         hourlyCommitment: asNumber(plan.commitment),
+        start: plan.start ?? null,
         end: plan.end ?? null,
       });
     }
@@ -532,24 +767,19 @@ async function listSavingsPlans(config: AwsEnvironmentConfig) {
 }
 
 function coverageLevel(
-  service: ServiceDefinition,
   running: number,
   reserved: number,
   riCoverage: number | null,
-  spCoverage: number | null,
 ): CoverageLevel {
   if (running === 0) {
     return "unknown";
   }
 
-  const percentages = [riCoverage, service.key === "ec2" ? spCoverage : null]
-    .filter((value): value is number => value !== null);
-  if (percentages.length > 0) {
-    const combined = Math.max(...percentages);
-    if (combined >= 80) {
+  if (riCoverage !== null) {
+    if (riCoverage >= 80) {
       return "good";
     }
-    if (combined >= 50) {
+    if (riCoverage >= 50) {
       return "attention";
     }
     return "risk";
@@ -563,35 +793,117 @@ function coverageLevel(
 
 function buildFindings(
   coverage: ServiceCoverage[],
+  metrics: CommitmentMetrics,
+  reservations: ReservationSummary[],
   savingsPlans: SavingsPlanSummary[],
+  savingsPlansError: string | null,
 ) {
   const findings: Finding[] = [];
 
-  for (const service of coverage) {
-    if (service.running > 0 && service.coverageLevel === "risk") {
-      findings.push({
-        id: `${service.key}-coverage-risk`,
-        severity: "high",
-        title: `${service.name} 커버리지가 낮습니다`,
-        detail:
-          service.key === "ec2" && savingsPlans.length === 0
-            ? `실행 자원 ${service.running}개에 적용할 활성 RI 또는 Savings Plan이 충분하지 않습니다.`
-            : `실행 자원 ${service.running}개 대비 예약 용량과 최근 30일 커버리지를 검토해 주세요.`,
-        service: service.name,
-      });
-    } else if (
-      service.running > 0 &&
-      service.coverageLevel === "attention"
+  const metricGroups = [
+    {
+      key: "ri",
+      name: "RI",
+      metrics: metrics.ri,
+      activeCount: reservations.reduce(
+        (sum, reservation) => sum + reservation.quantity,
+        0,
+      ),
+    },
+    {
+      key: "savings-plans",
+      name: "Savings Plans",
+      metrics: metrics.savingsPlans,
+      activeCount: savingsPlans.length,
+    },
+  ];
+
+  for (const group of metricGroups) {
+    if (
+      group.activeCount > 0 &&
+      group.metrics.utilization.status === "ready" &&
+      group.metrics.utilization.value !== null &&
+      group.metrics.utilization.value < 80
     ) {
       findings.push({
-        id: `${service.key}-coverage-attention`,
-        severity: "medium",
-        title: `${service.name} 추가 최적화가 가능합니다`,
-        detail: "온디맨드 사용량과 예약 만료 일정을 확인해 보세요.",
-        service: service.name,
+        id: `${group.key}-utilization`,
+        severity:
+          group.metrics.utilization.value < 50 ? "high" : "medium",
+        title: `${group.name} 사용률을 점검해 주세요`,
+        detail: `최근 30일 사용률이 ${group.metrics.utilization.value}%입니다. 미사용 약정 비용을 확인하세요.`,
+        service: group.name,
       });
     }
 
+    const pendingMessages = [
+      group.metrics.coverage,
+      group.metrics.utilization,
+      group.metrics.netSavingsUsd,
+    ]
+      .filter((metric) => metric.status === "pending")
+      .map((metric) => metric.message)
+      .filter((message): message is string => Boolean(message));
+    if (group.activeCount > 0 && pendingMessages.length > 0) {
+      findings.push({
+        id: `${group.key}-pending`,
+        severity: "info",
+        title: `${group.name} 비용 데이터 집계 대기 중`,
+        detail: [...new Set(pendingMessages)].join(" "),
+        service: group.name,
+      });
+    }
+  }
+
+  const commitments = [
+    ...reservations.map((reservation) => ({
+      label: `${reservation.service} RI`,
+      end: reservation.end,
+    })),
+    ...savingsPlans.map((plan) => ({
+      label: `${plan.type} Savings Plan`,
+      end: plan.end,
+    })),
+  ]
+    .filter(
+      (commitment): commitment is { label: string; end: string } =>
+        commitment.end !== null,
+    )
+    .map((commitment) => ({
+      ...commitment,
+      days: Math.ceil(
+        (new Date(commitment.end).getTime() - Date.now()) / 86_400_000,
+      ),
+    }))
+    .filter((commitment) => commitment.days >= 0)
+    .sort((a, b) => a.days - b.days);
+
+  const expiringIn30Days = commitments.filter(
+    (commitment) => commitment.days <= 30,
+  );
+  const expiringIn60Days = commitments.filter(
+    (commitment) => commitment.days > 30 && commitment.days <= 60,
+  );
+  if (expiringIn30Days.length > 0) {
+    const nearest = expiringIn30Days[0];
+    findings.push({
+      id: "commitment-expiry-30",
+      severity: "high",
+      title: `30일 이내 만료 약정 ${expiringIn30Days.length}건`,
+      detail: `가장 가까운 만료는 ${nearest.label}, ${nearest.end.slice(0, 10)}입니다.`,
+      service: "Commitments",
+    });
+  } else if (expiringIn60Days.length > 0) {
+    const nearest = expiringIn60Days[0];
+    findings.push({
+      id: "commitment-expiry-60",
+      severity: "medium",
+      title: `60일 이내 만료 약정 ${expiringIn60Days.length}건`,
+      detail: `가장 가까운 만료는 ${nearest.label}, ${nearest.end.slice(0, 10)}입니다.`,
+      service: "Commitments",
+    });
+  }
+
+  for (const service of coverage) {
     if (service.errors.length > 0) {
       findings.push({
         id: `${service.key}-scan-error`,
@@ -603,12 +915,22 @@ function buildFindings(
     }
   }
 
+  if (savingsPlansError) {
+    findings.push({
+      id: "savings-plans-scan-error",
+      severity: "info",
+      title: "Savings Plans 목록을 확인하지 못했습니다",
+      detail: savingsPlansError,
+      service: "Savings Plans",
+    });
+  }
+
   if (findings.length === 0) {
     findings.push({
       id: "coverage-healthy",
       severity: "info",
-      title: "즉시 확인할 커버리지 위험이 없습니다",
-      detail: "예약 만료일과 사용량 변화를 정기적으로 모니터링하세요.",
+      title: "즉시 확인할 약정 위험이 없습니다",
+      detail: "커버리지, 사용률, 절감액과 만료 일정을 정기적으로 확인하세요.",
       service: "전체",
     });
   }
@@ -642,6 +964,8 @@ export async function scanEnvironment(
       generatedAt,
       coverageWindow: window,
       services: [],
+      metrics: emptyCommitmentMetrics(),
+      reservations: [],
       savingsPlans: [],
       findings: [],
       error: errorMessage(error),
@@ -653,17 +977,27 @@ export async function scanEnvironment(
     credentials: config.credentials,
     maxAttempts: 2,
   });
-  const plansResult = await Promise.allSettled([
-    listSavingsPlans(config),
-    savingsPlansCoverage(costClient, window),
-  ]);
+  const [plansResult, riMetricsResult, savingsPlansMetricsResult] =
+    await Promise.allSettled([
+      listSavingsPlans(config),
+      reservationMetrics(costClient, window),
+      savingsPlansMetrics(costClient, window),
+    ]);
   const savingsPlans =
-    plansResult[0].status === "fulfilled" ? plansResult[0].value : [];
-  const ec2SavingsPlansCoverage =
-    plansResult[1].status === "fulfilled" ? plansResult[1].value : null;
+    plansResult.status === "fulfilled" ? plansResult.value : [];
+  const metrics: CommitmentMetrics = {
+    ri:
+      riMetricsResult.status === "fulfilled"
+        ? riMetricsResult.value
+        : failedMetricSet(riMetricsResult.reason),
+    savingsPlans:
+      savingsPlansMetricsResult.status === "fulfilled"
+        ? savingsPlansMetricsResult.value
+        : failedMetricSet(savingsPlansMetricsResult.reason),
+  };
 
-  const serviceCoverage = await Promise.all(
-    services.map(async (service): Promise<ServiceCoverage> => {
+  const serviceResults = await Promise.all(
+    services.map(async (service) => {
       const errors: string[] = [];
       const inventoryResults = await Promise.allSettled(
         config.regions.map((region) =>
@@ -704,52 +1038,49 @@ export async function scanEnvironment(
         (sum, inventory) => sum + inventory.reserved,
         0,
       );
-      const savingsCoverage =
-        service.key === "ec2" ? ec2SavingsPlansCoverage : null;
 
       return {
-        key: service.key,
-        name: service.name,
-        running,
-        reserved,
-        riCoveragePercentage: riCoverage,
-        savingsPlansCoveragePercentage: savingsCoverage,
-        coverageLevel: coverageLevel(
-          service,
+        coverage: {
+          key: service.key,
+          name: service.name,
           running,
           reserved,
-          riCoverage,
-          savingsCoverage,
+          riCoveragePercentage: riCoverage,
+          savingsPlansCoveragePercentage: null,
+          coverageLevel: coverageLevel(running, reserved, riCoverage),
+          breakdown: inventories
+            .flatMap((inventory) => inventory.breakdown)
+            .sort(
+              (a, b) =>
+                a.region.localeCompare(b.region) ||
+                a.family.localeCompare(b.family),
+            ),
+          errors: [...new Set(errors)],
+        } satisfies ServiceCoverage,
+        reservations: inventories.flatMap(
+          (inventory) => inventory.reservations,
         ),
-        breakdown: inventories
-          .flatMap((inventory) => inventory.breakdown)
-          .sort(
-            (a, b) =>
-              a.region.localeCompare(b.region) ||
-              a.family.localeCompare(b.family),
-          ),
-        errors: [...new Set(errors)],
       };
     }),
   );
-
-  const ec2Coverage = serviceCoverage.find(
-    (service) => service.key === "ec2",
-  );
-  if (plansResult[0].status === "rejected") {
-    ec2Coverage?.errors.push(
-      `Savings Plans: ${errorMessage(plansResult[0].reason)}`,
-    );
-  }
-  if (plansResult[1].status === "rejected") {
-    ec2Coverage?.errors.push(
-      `SP 커버리지: ${errorMessage(plansResult[1].reason)}`,
-    );
-  }
+  const serviceCoverage = serviceResults.map((result) => result.coverage);
+  const reservations = serviceResults
+    .flatMap((result) => result.reservations)
+    .sort((a, b) => (a.end ?? "").localeCompare(b.end ?? ""));
 
   const hasErrors = serviceCoverage.some(
     (service) => service.errors.length > 0,
-  );
+  ) ||
+    plansResult.status === "rejected" ||
+    [metrics.ri, metrics.savingsPlans].some((metricSet) =>
+      [metricSet.coverage, metricSet.utilization, metricSet.netSavingsUsd].some(
+        (metric) => metric.status === "error",
+      ),
+    );
+  const savingsPlansError =
+    plansResult.status === "rejected"
+      ? errorMessage(plansResult.reason)
+      : null;
 
   return {
     id: config.id,
@@ -760,8 +1091,16 @@ export async function scanEnvironment(
     generatedAt,
     coverageWindow: window,
     services: serviceCoverage,
+    metrics,
+    reservations,
     savingsPlans,
-    findings: buildFindings(serviceCoverage, savingsPlans),
+    findings: buildFindings(
+      serviceCoverage,
+      metrics,
+      reservations,
+      savingsPlans,
+      savingsPlansError,
+    ),
     error: null,
   };
 }

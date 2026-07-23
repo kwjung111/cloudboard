@@ -11,11 +11,30 @@ export type ScanStatus = "ready" | "partial" | "failed" | "unconfigured";
 
 export type CoverageLevel = "good" | "attention" | "risk" | "unknown";
 
+export type MetricStatus = "ready" | "pending" | "unavailable" | "error";
+
 export interface ResourceBreakdown {
   region: string;
   family: string;
   running: number;
   reserved: number;
+}
+
+export interface MetricValue {
+  value: number | null;
+  status: MetricStatus;
+  message: string | null;
+}
+
+export interface CommitmentMetricSet {
+  coverage: MetricValue;
+  utilization: MetricValue;
+  netSavingsUsd: MetricValue;
+}
+
+export interface CommitmentMetrics {
+  ri: CommitmentMetricSet;
+  savingsPlans: CommitmentMetricSet;
 }
 
 export interface ServiceCoverage {
@@ -30,11 +49,24 @@ export interface ServiceCoverage {
   errors: string[];
 }
 
+export interface ReservationSummary {
+  id: string;
+  kind: "ri";
+  service: string;
+  region: string;
+  family: string;
+  quantity: number;
+  start: string | null;
+  end: string | null;
+}
+
 export interface SavingsPlanSummary {
   id: string;
+  kind: "savings-plan";
   type: string;
   region: string | null;
   hourlyCommitment: number;
+  start: string | null;
   end: string | null;
 }
 
@@ -58,6 +90,8 @@ export interface EnvironmentReport {
     end: string;
   };
   services: ServiceCoverage[];
+  metrics: CommitmentMetrics;
+  reservations: ReservationSummary[];
   savingsPlans: SavingsPlanSummary[];
   findings: Finding[];
   error: string | null;

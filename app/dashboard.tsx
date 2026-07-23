@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   ApiError,
+  CommitmentMetricSet,
   EnvironmentId,
   EnvironmentReport,
-  ServiceCoverage,
+  MetricValue,
 } from "../lib/cloudboard";
 
 const environments: { id: EnvironmentId; label: string; short: string }[] = [
@@ -20,8 +21,25 @@ const coverageLabels = {
   unknown: "대상 없음",
 };
 
+const metricStatusLabels = {
+  ready: "집계 완료",
+  pending: "집계 대기",
+  unavailable: "데이터 없음",
+  error: "조회 실패",
+};
+
 function formatPercentage(value: number | null) {
   return value === null ? "—" : `${value.toFixed(value % 1 === 0 ? 0 : 1)}%`;
+}
+
+function formatCurrency(value: number | null) {
+  return value === null
+    ? "—"
+    : new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: 2,
+      }).format(value);
 }
 
 function formatAccountId(value: string | null) {
@@ -39,29 +57,68 @@ function formatDateTime(value: string) {
   }).format(new Date(value));
 }
 
-function weightedCoverage(services: ServiceCoverage[]) {
-  const measurable = services.filter(
-    (service) =>
-      service.running > 0 &&
-      (service.riCoveragePercentage !== null ||
-        service.savingsPlansCoveragePercentage !== null),
-  );
-  const totalResources = measurable.reduce(
-    (sum, service) => sum + service.running,
-    0,
-  );
-  if (totalResources === 0) {
-    return null;
-  }
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("ko-KR", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(value));
+}
 
+function inclusiveEndDate(value: string) {
+  const end = new Date(`${value}T00:00:00.000Z`);
+  end.setUTCDate(end.getUTCDate() - 1);
+  return end.toISOString().slice(0, 10);
+}
+
+function daysUntil(value: string) {
+  return Math.max(
+    0,
+    Math.ceil((new Date(value).getTime() - Date.now()) / 86_400_000),
+  );
+}
+
+function metricText(metric: MetricValue, type: "percentage" | "currency") {
+  if (metric.status !== "ready") {
+    return metricStatusLabels[metric.status];
+  }
+  return type === "percentage"
+    ? formatPercentage(metric.value)
+    : formatCurrency(metric.value);
+}
+
+function MetricSummaryCard({
+  title,
+  eyebrow,
+  metrics,
+}: {
+  title: string;
+  eyebrow: string;
+  metrics: CommitmentMetricSet;
+}) {
   return (
-    measurable.reduce((sum, service) => {
-      const combined = Math.max(
-        service.riCoveragePercentage ?? 0,
-        service.savingsPlansCoveragePercentage ?? 0,
-      );
-      return sum + combined * service.running;
-    }, 0) / totalResources
+    <article className={`summary-card metric-summary ${metrics.coverage.status}`}>
+      <span className="card-label">{title}</span>
+      <div className="metric-heading">
+        <strong>{metricText(metrics.coverage, "percentage")}</strong>
+        <span>{eyebrow}</span>
+      </div>
+      {metrics.coverage.status === "ready" && (
+        <div className="coverage-track">
+          <span
+            style={{ width: `${metrics.coverage.value ?? 0}%` }}
+            aria-hidden="true"
+          />
+        </div>
+      )}
+      <div className="metric-secondary">
+        <span>약정 사용률</span>
+        <strong>{metricText(metrics.utilization, "percentage")}</strong>
+      </div>
+      {metrics.coverage.message && (
+        <p className="metric-message">{metrics.coverage.message}</p>
+      )}
+    </article>
   );
 }
 
@@ -162,23 +219,55 @@ export function CloudBoardDashboard() {
     if (!report) {
       return null;
     }
+
+    const commitments = [
+      ...report.reservations.map((reservation) => ({
+        id: `ri-${reservation.service}-${reservation.region}-${reservation.id}`,
+        kind: "RI",
+        title: reservation.service,
+        detail: `${reservation.family} · ${reservation.region}`,
+        quantity: reservation.quantity,
+        amount: null,
+        end: reservation.end,
+      })),
+      ...report.savingsPlans.map((plan) => ({
+        id: `sp-${plan.id}`,
+        kind: "SP",
+        title: `${plan.type} Savings Plan`,
+        detail: plan.region ?? "Global",
+        quantity: 1,
+        amount: plan.hourlyCommitment,
+        end: plan.end,
+      })),
+    ].sort((left, right) => (left.end ?? "").localeCompare(right.end ?? ""));
+
+    const savingsMetrics = [
+      report.metrics.ri.netSavingsUsd,
+      report.metrics.savingsPlans.netSavingsUsd,
+    ];
+    const readySavings = savingsMetrics
+      .filter((metric) => metric.status === "ready")
+      .map((metric) => metric.value)
+      .filter((value): value is number => value !== null);
+
     return {
-      coverage: weightedCoverage(report.services),
-      running: report.services.reduce(
-        (sum, service) => sum + service.running,
-        0,
+      commitments,
+      nextExpiry:
+        commitments.find((commitment) => commitment.end !== null) ?? null,
+      totalSavings:
+        readySavings.length > 0
+          ? readySavings.reduce((sum, value) => sum + value, 0)
+          : null,
+      savingsIncomplete: savingsMetrics.some(
+        (metric) => metric.status !== "ready",
       ),
-      reserved: report.services.reduce(
-        (sum, service) => sum + service.reserved,
+      activeRi: report.reservations.reduce(
+        (sum, reservation) => sum + reservation.quantity,
         0,
       ),
       risks: report.findings.filter(
         (finding) => finding.severity === "high",
       ).length,
-      commitment: report.savingsPlans.reduce(
-        (sum, plan) => sum + plan.hourlyCommitment,
-        0,
-      ),
     };
   }, [report]);
 
@@ -205,15 +294,15 @@ export function CloudBoardDashboard() {
         <nav className="primary-nav" aria-label="주요 메뉴">
           <a className="nav-item active" href="#overview" aria-current="page">
             <span>01</span>
-            Coverage
+            Overview
           </a>
           <a className="nav-item" href="#services">
             <span>02</span>
-            Resources
+            Coverage
           </a>
-          <a className="nav-item" href="#findings">
+          <a className="nav-item" href="#commitments">
             <span>03</span>
-            Findings
+            Expirations
           </a>
         </nav>
 
@@ -230,7 +319,7 @@ export function CloudBoardDashboard() {
         <header className="topbar">
           <div>
             <p className="eyebrow">AWS COST GOVERNANCE</p>
-            <h1>RI &amp; Savings Plans Coverage</h1>
+            <h1>Commitment Performance</h1>
           </div>
           <div className="topbar-actions">
             <label className="token-field">
@@ -267,7 +356,7 @@ export function CloudBoardDashboard() {
                 onClick={() => setEnvironment(item.id)}
               >
                 <span>{item.short}</span>
-                {item.label}
+                {reports[item.id]?.name ?? item.label}
               </button>
             ))}
           </div>
@@ -311,133 +400,183 @@ export function CloudBoardDashboard() {
           />
         ) : report && summary ? (
           <>
-            <section className="summary-grid" id="overview">
-              <article className="summary-card featured">
-                <span className="card-label">30일 가중 커버리지</span>
+            <section className="metric-guide" id="overview">
+              <div>
+                <strong>Coverage</strong>
+                <span>전체 적격 사용량 중 약정 할인이 적용된 비율</span>
+              </div>
+              <span className="guide-divider" />
+              <div>
+                <strong>Utilization</strong>
+                <span>구매한 약정 중 실제 워크로드가 소비한 비율</span>
+              </div>
+              <p>두 지표가 함께 높을수록 약정을 효율적으로 운용하고 있습니다.</p>
+            </section>
+
+            <section className="summary-grid">
+              <MetricSummaryCard
+                title="RI 성과"
+                eyebrow="30일 커버리지"
+                metrics={report.metrics.ri}
+              />
+              <MetricSummaryCard
+                title="Savings Plans 성과"
+                eyebrow="30일 커버리지"
+                metrics={report.metrics.savingsPlans}
+              />
+              <article className="summary-card featured savings-summary">
+                <span className="card-label">30일 실현 절감액</span>
                 <div className="coverage-value">
-                  {summary.coverage === null
-                    ? "—"
-                    : `${Math.round(summary.coverage)}%`}
+                  {formatCurrency(summary.totalSavings)}
                 </div>
-                <div className="coverage-track">
-                  <span
-                    style={{ width: `${summary.coverage ?? 0}%` }}
-                    aria-hidden="true"
-                  />
+                <div className="savings-split">
+                  <span>
+                    RI
+                    <strong>
+                      {metricText(
+                        report.metrics.ri.netSavingsUsd,
+                        "currency",
+                      )}
+                    </strong>
+                  </span>
+                  <span>
+                    SP
+                    <strong>
+                      {metricText(
+                        report.metrics.savingsPlans.netSavingsUsd,
+                        "currency",
+                      )}
+                    </strong>
+                  </span>
                 </div>
                 <p>
-                  {report.coverageWindow.start} — {report.coverageWindow.end}
+                  {summary.savingsIncomplete
+                    ? "일부 비용 데이터는 집계 대기 또는 조회 불가 상태입니다."
+                    : "동일 사용량의 On-Demand 비용 대비 순절감액"}
                 </p>
               </article>
-              <article className="summary-card">
-                <span className="card-index">01</span>
-                <span className="card-label">실행 자원</span>
-                <strong>{summary.running}</strong>
-                <p>예약 용량 {summary.reserved}개</p>
-              </article>
-              <article className="summary-card">
-                <span className="card-index">02</span>
-                <span className="card-label">활성 Savings Plans</span>
-                <strong>{report.savingsPlans.length}</strong>
-                <p>${summary.commitment.toFixed(2)} / hour</p>
-              </article>
-              <article className="summary-card">
-                <span className="card-index">03</span>
-                <span className="card-label">우선 확인</span>
-                <strong className={summary.risks > 0 ? "risk-number" : ""}>
-                  {summary.risks}
-                </strong>
-                <p>높은 위험 항목</p>
+              <article className="summary-card expiry-summary">
+                <span className="card-label">다음 약정 만료</span>
+                {summary.nextExpiry?.end ? (
+                  <>
+                    <strong>D-{daysUntil(summary.nextExpiry.end)}</strong>
+                    <p>{summary.nextExpiry.title}</p>
+                    <span className="expiry-date">
+                      {formatDate(summary.nextExpiry.end)}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <strong>—</strong>
+                    <p>활성 RI 또는 Savings Plan이 없습니다.</p>
+                  </>
+                )}
+                <div className="active-counts">
+                  <span>RI {summary.activeRi}</span>
+                  <span>SP {report.savingsPlans.length}</span>
+                </div>
               </article>
             </section>
 
             <section className="panel service-panel" id="services">
               <div className="panel-heading">
                 <div>
-                  <span className="section-index">01 / COVERAGE</span>
-                  <h2>서비스별 커버리지</h2>
+                  <span className="section-index">01 / RI COVERAGE</span>
+                  <h2>서비스별 RI 커버리지</h2>
                 </div>
                 <span className="updated-at">
-                  {formatDateTime(report.generatedAt)} 기준
+                  {report.coverageWindow.start} —{" "}
+                  {inclusiveEndDate(report.coverageWindow.end)}
                 </span>
               </div>
 
               <div className="service-table" role="table">
                 <div className="service-row table-head" role="row">
                   <span role="columnheader">서비스</span>
-                  <span role="columnheader">실행 / 예약</span>
-                  <span role="columnheader">RI</span>
-                  <span role="columnheader">Savings Plans</span>
+                  <span role="columnheader">실행 / 활성 RI</span>
+                  <span role="columnheader">RI 커버리지</span>
+                  <span role="columnheader">가장 가까운 만료</span>
                   <span role="columnheader">상태</span>
                 </div>
-                {report.services.map((service) => (
-                  <details className="service-details" key={service.key}>
-                    <summary className="service-row" role="row">
-                      <span className="service-name" role="cell">
-                        <span className={`service-monogram ${service.key}`}>
-                          {service.name
-                            .replace("Amazon ", "")
-                            .slice(0, 2)
-                            .toUpperCase()}
+                {report.services.map((service) => {
+                  const nextServiceExpiry = report.reservations
+                    .filter(
+                      (reservation) =>
+                        reservation.service === service.name && reservation.end,
+                    )
+                    .sort((a, b) =>
+                      (a.end ?? "").localeCompare(b.end ?? ""),
+                    )[0];
+
+                  return (
+                    <details className="service-details" key={service.key}>
+                      <summary className="service-row" role="row">
+                        <span className="service-name" role="cell">
+                          <span className={`service-monogram ${service.key}`}>
+                            {service.name
+                              .replace("Amazon ", "")
+                              .slice(0, 2)
+                              .toUpperCase()}
+                          </span>
+                          <span>
+                            <strong>{service.name}</strong>
+                            <small>
+                              {service.breakdown.length}개 구성 그룹
+                            </small>
+                          </span>
                         </span>
-                        <span>
-                          <strong>{service.name}</strong>
-                          <small>
-                            {service.breakdown.length}개 구성 그룹
-                          </small>
+                        <span className="resource-count" role="cell">
+                          <strong>{service.running}</strong>
+                          <small>/ {service.reserved}</small>
                         </span>
-                      </span>
-                      <span className="resource-count" role="cell">
-                        <strong>{service.running}</strong>
-                        <small>/ {service.reserved}</small>
-                      </span>
-                      <span role="cell">
-                        {formatPercentage(service.riCoveragePercentage)}
-                      </span>
-                      <span role="cell">
-                        {formatPercentage(
-                          service.savingsPlansCoveragePercentage,
+                        <span role="cell">
+                          {formatPercentage(service.riCoveragePercentage)}
+                        </span>
+                        <span role="cell">
+                          {nextServiceExpiry?.end
+                            ? `D-${daysUntil(nextServiceExpiry.end)}`
+                            : "—"}
+                        </span>
+                        <span role="cell">
+                          <span
+                            className={`coverage-badge ${service.coverageLevel}`}
+                          >
+                            {coverageLabels[service.coverageLevel]}
+                          </span>
+                        </span>
+                      </summary>
+                      <div className="breakdown">
+                        {service.breakdown.length > 0 ? (
+                          <div className="breakdown-grid">
+                            {service.breakdown.map((item) => (
+                              <div
+                                key={`${item.region}-${item.family}`}
+                                className="breakdown-item"
+                              >
+                                <span>{item.region}</span>
+                                <strong>{item.family}</strong>
+                                <small>
+                                  실행 {item.running} · 활성 RI {item.reserved}
+                                </small>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p>조회된 실행 자원이 없습니다.</p>
                         )}
-                      </span>
-                      <span role="cell">
-                        <span
-                          className={`coverage-badge ${service.coverageLevel}`}
-                        >
-                          {coverageLabels[service.coverageLevel]}
-                        </span>
-                      </span>
-                    </summary>
-                    <div className="breakdown">
-                      {service.breakdown.length > 0 ? (
-                        <div className="breakdown-grid">
-                          {service.breakdown.map((item) => (
-                            <div
-                              key={`${item.region}-${item.family}`}
-                              className="breakdown-item"
-                            >
-                              <span>{item.region}</span>
-                              <strong>{item.family}</strong>
-                              <small>
-                                실행 {item.running} · 예약 {item.reserved}
-                              </small>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p>조회된 실행 자원이 없습니다.</p>
-                      )}
-                      {service.errors.map((serviceError) => (
-                        <p className="service-error" key={serviceError}>
-                          {serviceError}
-                        </p>
-                      ))}
-                    </div>
-                  </details>
-                ))}
+                        {service.errors.map((serviceError) => (
+                          <p className="service-error" key={serviceError}>
+                            {serviceError}
+                          </p>
+                        ))}
+                      </div>
+                    </details>
+                  );
+                })}
               </div>
             </section>
 
-            <section className="lower-grid" id="findings">
+            <section className="lower-grid" id="commitments">
               <article className="panel findings-panel">
                 <div className="panel-heading">
                   <div>
@@ -447,7 +586,7 @@ export function CloudBoardDashboard() {
                   <span className="count-pill">{report.findings.length}</span>
                 </div>
                 <div className="findings-list">
-                  {report.findings.slice(0, 6).map((finding) => (
+                  {report.findings.slice(0, 8).map((finding) => (
                     <div className="finding" key={finding.id}>
                       <span className={`finding-mark ${finding.severity}`} />
                       <div>
@@ -465,25 +604,40 @@ export function CloudBoardDashboard() {
               <article className="panel commitments-panel">
                 <div className="panel-heading">
                   <div>
-                    <span className="section-index">03 / COMMITMENTS</span>
-                    <h2>활성 Savings Plans</h2>
+                    <span className="section-index">03 / EXPIRATIONS</span>
+                    <h2>활성 약정 만료 일정</h2>
                   </div>
+                  <span className="count-pill">
+                    {summary.commitments.length}
+                  </span>
                 </div>
-                {report.savingsPlans.length > 0 ? (
+                {summary.commitments.length > 0 ? (
                   <div className="commitment-list">
-                    {report.savingsPlans.map((plan) => (
-                      <div className="commitment" key={plan.id}>
+                    {summary.commitments.map((commitment) => (
+                      <div className="commitment" key={commitment.id}>
+                        <span
+                          className={`commitment-kind ${commitment.kind.toLowerCase()}`}
+                        >
+                          {commitment.kind}
+                        </span>
                         <div>
-                          <strong>{plan.type}</strong>
-                          <span>{plan.region ?? "Global"}</span>
+                          <strong>{commitment.title}</strong>
+                          <span>
+                            {commitment.detail}
+                            {commitment.quantity > 1
+                              ? ` · ${commitment.quantity}개`
+                              : ""}
+                          </span>
                         </div>
                         <div>
-                          <strong>${plan.hourlyCommitment.toFixed(2)}/h</strong>
+                          {commitment.amount !== null && (
+                            <strong>${commitment.amount.toFixed(2)}/h</strong>
+                          )}
                           <span>
-                            {plan.end
-                              ? `${new Intl.DateTimeFormat("ko-KR").format(
-                                  new Date(plan.end),
-                                )} 만료`
+                            {commitment.end
+                              ? `${formatDate(commitment.end)} · D-${daysUntil(
+                                  commitment.end,
+                                )}`
                               : "만료일 없음"}
                           </span>
                         </div>
@@ -492,13 +646,18 @@ export function CloudBoardDashboard() {
                   </div>
                 ) : (
                   <div className="no-commitments">
-                    <span>SP</span>
-                    <strong>활성 플랜이 없습니다</strong>
-                    <p>EC2 온디맨드 사용량과 구매 권장 사항을 확인하세요.</p>
+                    <span>RI</span>
+                    <strong>활성 약정이 없습니다</strong>
+                    <p>커버리지 목표와 워크로드 안정성을 먼저 검토하세요.</p>
                   </div>
                 )}
               </article>
             </section>
+
+            <p className="data-footnote">
+              마지막 조회 {formatDateTime(report.generatedAt)} · 절감액은 AWS Cost
+              Explorer의 Net Savings 기준 · 모든 금액은 USD
+            </p>
           </>
         ) : null}
       </main>

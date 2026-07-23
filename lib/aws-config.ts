@@ -12,7 +12,7 @@ export interface AwsEnvironmentConfig {
   };
 }
 
-const environmentNames: Record<EnvironmentId, string> = {
+const defaultEnvironmentNames: Record<EnvironmentId, string> = {
   dev: "Development",
   prd: "Production",
 };
@@ -78,7 +78,9 @@ export function getEnvironmentConfig(
 
   return {
     id: environmentId,
-    name: environmentNames[environmentId],
+    name:
+      process.env[`${prefix}_NAME`]?.trim() ??
+      defaultEnvironmentNames[environmentId],
     regions: parseRegions(process.env[`${prefix}_REGIONS`]),
     credentials: {
       accessKeyId,
@@ -89,5 +91,9 @@ export function getEnvironmentConfig(
 }
 
 export function getEnvironmentName(environmentId: EnvironmentId) {
-  return environmentNames[environmentId];
+  const prefix = `AWS_${environmentId.toUpperCase()}`;
+  return (
+    process.env[`${prefix}_NAME`]?.trim() ??
+    defaultEnvironmentNames[environmentId]
+  );
 }

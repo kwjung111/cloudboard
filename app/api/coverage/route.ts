@@ -74,9 +74,9 @@ export async function GET(request: Request) {
   if (!config) {
     const now = new Date();
     const end = new Date(now);
-    end.setUTCDate(end.getUTCDate() - 1);
+    end.setUTCHours(0, 0, 0, 0);
     const start = new Date(end);
-    start.setUTCDate(start.getUTCDate() - 29);
+    start.setUTCDate(start.getUTCDate() - 30);
     const report: EnvironmentReport = {
       id: environmentId,
       name: getEnvironmentName(environmentId),
@@ -89,6 +89,19 @@ export async function GET(request: Request) {
         end: end.toISOString().slice(0, 10),
       },
       services: [],
+      metrics: {
+        ri: {
+          coverage: { value: null, status: "unavailable", message: null },
+          utilization: { value: null, status: "unavailable", message: null },
+          netSavingsUsd: { value: null, status: "unavailable", message: null },
+        },
+        savingsPlans: {
+          coverage: { value: null, status: "unavailable", message: null },
+          utilization: { value: null, status: "unavailable", message: null },
+          netSavingsUsd: { value: null, status: "unavailable", message: null },
+        },
+      },
+      reservations: [],
       savingsPlans: [],
       findings: [],
       error: "이 환경의 AWS 읽기 전용 자격 증명이 설정되지 않았습니다.",
