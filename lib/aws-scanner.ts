@@ -56,6 +56,8 @@ import type {
   ReservationSummary,
   ResourceBreakdown,
   SavingsPlanSummary,
+  SavingsPlansCoverageBreakdown,
+  SavingsPlansServiceCoverage,
   ServiceCoverage,
   ServiceKey,
 } from "./cloudboard";
@@ -639,6 +641,79 @@ async function savingsPlansCoverage(
   );
 }
 
+async function savingsPlansCoverageByService(
+  client: CostExplorerClient,
+  window: { start: string; end: string },
+): Promise<SavingsPlansServiceCoverage[]> {
+  const servicesByName = new Map<string, SavingsPlansServiceCoverage>();
+  let nextToken: string | undefined;
+
+  do {
+    const response = await client.send(
+      new GetSavingsPlansCoverageCommand({
+        TimePeriod: { Start: window.start, End: window.end },
+        GroupBy: [{ Type: "DIMENSION", Key: "SERVICE" }],
+        Metrics: ["SpendCoveredBySavingsPlans"],
+        MaxResults: 100,
+        NextToken: nextToken,
+      }),
+    );
+
+    for (const item of response.SavingsPlansCoverages ?? []) {
+      const attributes = item.Attributes ?? {};
+      const service =
+        attributes.SERVICE ??
+        attributes.Service ??
+        attributes.service ??
+        Object.values(attributes)[0];
+      if (!service) {
+        continue;
+      }
+
+      servicesByName.set(service, {
+        service,
+        coveragePercentage: toPercentage(
+          item.Coverage?.CoveragePercentage,
+        ),
+        spendCoveredUsd: toCurrency(
+          item.Coverage?.SpendCoveredBySavingsPlans,
+        ),
+        onDemandCostUsd: toCurrency(item.Coverage?.OnDemandCost),
+        totalCostUsd: toCurrency(item.Coverage?.TotalCost),
+      });
+    }
+    nextToken = response.NextToken;
+  } while (nextToken);
+
+  return [...servicesByName.values()].sort(
+    (left, right) =>
+      (right.totalCostUsd ?? 0) - (left.totalCostUsd ?? 0) ||
+      left.service.localeCompare(right.service),
+  );
+}
+
+function savingsPlansCoverageBreakdown(
+  result: PromiseSettledResult<SavingsPlansServiceCoverage[]>,
+): SavingsPlansCoverageBreakdown {
+  if (result.status === "fulfilled") {
+    return {
+      status: "ready",
+      message:
+        result.value.length === 0
+          ? "최근 30일간 Savings Plans 적격 사용 비용이 없습니다."
+          : null,
+      services: result.value,
+    };
+  }
+
+  const failure = metricFailure(result.reason);
+  return {
+    status: failure.status,
+    message: failure.message,
+    services: [],
+  };
+}
+
 async function reservationMetrics(
   client: CostExplorerClient,
   window: { start: string; end: string },
@@ -964,6 +1039,11 @@ export async function scanEnvironment(
       generatedAt,
       coverageWindow: window,
       services: [],
+      savingsPlansCoverage: {
+        status: "unavailable",
+        message: "AWS 연결 후 조회됩니다.",
+        services: [],
+      },
       metrics: emptyCommitmentMetrics(),
       reservations: [],
       savingsPlans: [],
@@ -977,11 +1057,17 @@ export async function scanEnvironment(
     credentials: config.credentials,
     maxAttempts: 2,
   });
-  const [plansResult, riMetricsResult, savingsPlansMetricsResult] =
+  const [
+    plansResult,
+    riMetricsResult,
+    savingsPlansMetricsResult,
+    savingsPlansCoverageResult,
+  ] =
     await Promise.allSettled([
       listSavingsPlans(config),
       reservationMetrics(costClient, window),
       savingsPlansMetrics(costClient, window),
+      savingsPlansCoverageByService(costClient, window),
     ]);
   const savingsPlans =
     plansResult.status === "fulfilled" ? plansResult.value : [];
@@ -995,6 +1081,9 @@ export async function scanEnvironment(
         ? savingsPlansMetricsResult.value
         : failedMetricSet(savingsPlansMetricsResult.reason),
   };
+  const savingsPlansCoverage = savingsPlansCoverageBreakdown(
+    savingsPlansCoverageResult,
+  );
 
   const serviceResults = await Promise.all(
     services.map(async (service) => {
@@ -1072,6 +1161,7 @@ export async function scanEnvironment(
     (service) => service.errors.length > 0,
   ) ||
     plansResult.status === "rejected" ||
+    savingsPlansCoverage.status === "error" ||
     [metrics.ri, metrics.savingsPlans].some((metricSet) =>
       [metricSet.coverage, metricSet.utilization, metricSet.netSavingsUsd].some(
         (metric) => metric.status === "error",
@@ -1091,6 +1181,7 @@ export async function scanEnvironment(
     generatedAt,
     coverageWindow: window,
     services: serviceCoverage,
+    savingsPlansCoverage,
     metrics,
     reservations,
     savingsPlans,

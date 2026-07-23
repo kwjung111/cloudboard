@@ -42,6 +42,11 @@ function unavailableReport(
       end: end.toISOString().slice(0, 10),
     },
     services: [],
+    savingsPlansCoverage: {
+      status: "unavailable",
+      message: "AWS 연결 후 조회됩니다.",
+      services: [],
+    },
     metrics: {
       ri: {
         coverage: { value: null, status: "unavailable", message: null },

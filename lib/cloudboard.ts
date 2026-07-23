@@ -70,6 +70,20 @@ export interface ServiceCoverage {
   errors: string[];
 }
 
+export interface SavingsPlansServiceCoverage {
+  service: string;
+  coveragePercentage: number | null;
+  spendCoveredUsd: number | null;
+  onDemandCostUsd: number | null;
+  totalCostUsd: number | null;
+}
+
+export interface SavingsPlansCoverageBreakdown {
+  status: MetricStatus;
+  message: string | null;
+  services: SavingsPlansServiceCoverage[];
+}
+
 export interface ReservationSummary {
   id: string;
   kind: "ri";
@@ -111,6 +125,7 @@ export interface EnvironmentReport {
     end: string;
   };
   services: ServiceCoverage[];
+  savingsPlansCoverage: SavingsPlansCoverageBreakdown;
   metrics: CommitmentMetrics;
   reservations: ReservationSummary[];
   savingsPlans: SavingsPlanSummary[];

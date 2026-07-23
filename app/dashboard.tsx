@@ -962,11 +962,69 @@ export function CloudBoardDashboard() {
               </div>
             </section>
 
+            <section className="panel savings-plans-coverage-panel">
+              <div className="panel-heading">
+                <div>
+                  <span className="section-index">
+                    02 / SAVINGS PLANS COVERAGE
+                  </span>
+                  <h2>서비스별 Savings Plans 커버리지</h2>
+                </div>
+                <span className="updated-at">
+                  {report.coverageWindow.start} —{" "}
+                  {inclusiveEndDate(report.coverageWindow.end)}
+                </span>
+              </div>
+
+              {report.savingsPlansCoverage.services.length > 0 ? (
+                <div className="sp-coverage-table" role="table">
+                  <div className="sp-coverage-row table-head" role="row">
+                    <span role="columnheader">AWS 서비스</span>
+                    <span role="columnheader">SP 적용 비용</span>
+                    <span role="columnheader">미적용 On-Demand 비용</span>
+                    <span role="columnheader">전체 적격 비용</span>
+                    <span role="columnheader">SP 커버리지</span>
+                  </div>
+                  {report.savingsPlansCoverage.services.map((service) => (
+                    <div className="sp-coverage-row" role="row" key={service.service}>
+                      <span role="cell">
+                        <strong>{service.service}</strong>
+                      </span>
+                      <span role="cell">
+                        {formatCurrency(service.spendCoveredUsd)}
+                      </span>
+                      <span role="cell">
+                        {formatCurrency(service.onDemandCostUsd)}
+                      </span>
+                      <span role="cell">
+                        {formatCurrency(service.totalCostUsd)}
+                      </span>
+                      <span role="cell">
+                        <strong>
+                          {formatPercentage(service.coveragePercentage)}
+                        </strong>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="coverage-empty" role="status">
+                  <strong>
+                    {metricStatusLabels[report.savingsPlansCoverage.status]}
+                  </strong>
+                  <span>
+                    {report.savingsPlansCoverage.message ??
+                      "서비스별 Savings Plans 커버리지 데이터가 없습니다."}
+                  </span>
+                </div>
+              )}
+            </section>
+
             <section className="lower-grid" id="commitments">
               <article className="panel findings-panel">
                 <div className="panel-heading">
                   <div>
-                    <span className="section-index">02 / FINDINGS</span>
+                    <span className="section-index">03 / FINDINGS</span>
                     <h2>우선 확인 항목</h2>
                   </div>
                   <span className="count-pill">{report.findings.length}</span>
@@ -990,7 +1048,7 @@ export function CloudBoardDashboard() {
               <article className="panel commitments-panel">
                 <div className="panel-heading">
                   <div>
-                    <span className="section-index">03 / EXPIRATIONS</span>
+                    <span className="section-index">04 / EXPIRATIONS</span>
                     <h2>활성 약정 만료 일정</h2>
                   </div>
                   <span className="count-pill">

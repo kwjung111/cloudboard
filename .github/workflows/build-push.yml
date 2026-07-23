@@ -112,8 +112,9 @@ jobs:
             echo "::error::SQLite 영속 볼륨의 /app/data 마운트가 필요합니다"
             exit 1
           fi
-          if ! grep -q '/run/cloudboard-credentials' "$MANIFEST_PATH"; then
-            echo "::error::AWS Secret volume의 /run/cloudboard-credentials 마운트가 필요합니다"
+          if ! grep -q '/run/cloudboard-credentials' "$MANIFEST_PATH" \
+            && ! grep -Eq 'AWS_[A-Z0-9_]+_ACCESS_KEY_ID' "$MANIFEST_PATH"; then
+            echo "::error::AWS 자격 증명 Secret volume 또는 환경 변수 참조가 필요합니다"
             exit 1
           fi
 

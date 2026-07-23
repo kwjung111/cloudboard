@@ -641,6 +641,10 @@ summary {
   margin-top: 18px;
 }
 
+.savings-plans-coverage-panel {
+  margin-top: 18px;
+}
+
 .panel-heading {
   min-height: 84px;
   padding: 18px 22px;
@@ -693,6 +697,44 @@ summary {
   font-size: 8px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.sp-coverage-row {
+  display: grid;
+  grid-template-columns: minmax(250px, 2fr) repeat(4, minmax(130px, 1fr));
+  align-items: center;
+  min-height: 58px;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+
+.sp-coverage-row:last-child {
+  border-bottom: 0;
+}
+
+.sp-coverage-row > span:not(:first-child) {
+  font-variant-numeric: tabular-nums;
+}
+
+.coverage-empty {
+  min-height: 112px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 5px;
+  padding: 24px;
+  color: var(--ink-muted);
+  text-align: center;
+}
+
+.coverage-empty strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.coverage-empty span {
+  font-size: 11px;
 }
 
 .service-name {
@@ -1496,9 +1538,18 @@ summary {
     overflow-x: auto;
   }
 
+  .sp-coverage-table {
+    overflow-x: auto;
+  }
+
   .service-row,
-  .breakdown {
+  .breakdown,
+  .sp-coverage-row {
     width: 710px;
+  }
+
+  .sp-coverage-row {
+    width: 900px;
   }
 
   .breakdown {

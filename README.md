@@ -18,6 +18,7 @@ Coverage가 높을수록 더 많은 사용량에 할인이 적용됩니다. Util
 
 - EC2, RDS, ElastiCache, OpenSearch, Redshift 실행 자원과 활성 RI
 - 서비스별 RI Coverage
+- AWS 서비스별 Savings Plans Coverage와 적용/미적용 비용
 - 계정 단위 RI Coverage, Utilization, Net RI Savings
 - 계정 단위 Savings Plans Coverage, Utilization, Net Savings
 - 모든 활성 RI와 Savings Plans의 시작일, 만료일, 수량 또는 시간당 약정액
