@@ -25,6 +25,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.21.0
+          cache: npm
+
+      - name: Verify source and runtime data boundaries
+        shell: bash
+        run: |
+          if [ -n "$(git ls-files '*.db' '*.db-shm' '*.db-wal' '*.sqlite' '*.sqlite3')" ]; then
+            echo "::error::SQLite 런타임 파일은 Git에 포함할 수 없습니다"
+            exit 1
+          fi
+          if [ -n "$(git ls-files '*accessKeys*.csv' 'credentials/*.csv')" ]; then
+            echo "::error::AWS 자격 증명 파일은 Git에 포함할 수 없습니다"
+            exit 1
+          fi
+          if git grep -q -E 'AKIA[0-9A-Z]{16}' -- .; then
+            echo "::error::AWS Access Key 형태의 문자열이 추적 파일에서 발견되었습니다"
+            exit 1
+          fi
+
+      - name: Install and test
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npm audit --omit=dev --audit-level=high
+
       - name: Resolve image tags
         id: meta
         run: |
@@ -77,6 +105,17 @@ jobs:
         with:
           repository: ${{ vars.MANIFEST_REPO }}
           token: ${{ secrets.MANIFEST_REPO_TOKEN }}
+
+      - name: Validate persistent runtime mounts
+        run: |
+          if ! grep -q '/app/data' "$MANIFEST_PATH"; then
+            echo "::error::SQLite 영속 볼륨의 /app/data 마운트가 필요합니다"
+            exit 1
+          fi
+          if ! grep -q '/run/cloudboard-credentials' "$MANIFEST_PATH"; then
+            echo "::error::AWS Secret volume의 /run/cloudboard-credentials 마운트가 필요합니다"
+            exit 1
+          fi
 
       - name: Bump image tag
         id: bump

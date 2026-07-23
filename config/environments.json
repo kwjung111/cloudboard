@@ -5,14 +5,14 @@
       "name": "Development",
       "group": "Default",
       "regions": ["ap-northeast-2"],
-      "credentialsFile": "/run/secrets/aws_dev_credentials"
+      "credentialRef": "dev"
     },
     {
       "id": "prd",
       "name": "Production",
       "group": "Default",
       "regions": ["ap-northeast-2"],
-      "credentialsFile": "/run/secrets/aws_prd_credentials"
+      "credentialRef": "prd"
     }
   ]
 }

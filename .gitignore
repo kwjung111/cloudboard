@@ -37,6 +37,10 @@ yarn-error.log*
 *credentials*.csv
 /credentials/*
 !/credentials/.gitkeep
+/data/
+*.db
+*.db-shm
+*.db-wal
 
 # vercel
 .vercel

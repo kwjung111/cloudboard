@@ -1,10 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+} from "react";
 import type {
   ApiError,
   CommitmentMetricSet,
   EnvironmentId,
+  EnvironmentInput,
   EnvironmentReport,
   EnvironmentSummary,
   EnvironmentsResponse,
@@ -23,6 +30,14 @@ const metricStatusLabels = {
   pending: "집계 대기",
   unavailable: "데이터 없음",
   error: "조회 실패",
+};
+
+const emptyEnvironmentForm: EnvironmentInput = {
+  id: "",
+  name: "",
+  group: "",
+  regions: ["ap-northeast-2"],
+  credentialRef: "",
 };
 
 function formatPercentage(value: number | null) {
@@ -131,25 +146,22 @@ function LoadingState() {
 }
 
 function EmptyState({
-  environment,
+  credentialRef,
   message,
 }: {
-  environment: EnvironmentId;
+  credentialRef: string;
   message: string;
 }) {
-  const prefix = `AWS_${environment.replaceAll("-", "_").toUpperCase()}`;
   return (
     <section className="empty-state">
       <span className="empty-eyebrow">환경 설정 필요</span>
       <h2>{message}</h2>
       <p>
-        로컬의 <code>.env.local</code> 또는 배포 환경의 비밀 변수에 아래
-        항목을 추가하세요. 키 파일은 저장소에 포함하지 않습니다.
+        읽기 전용 AWS 자격 증명 CSV를 아래 파일명으로 Secret volume에
+        마운트하세요. 키 파일은 SQLite, 이미지, Git에 저장하지 않습니다.
       </p>
       <div className="config-keys">
-        <code>{prefix}_ACCESS_KEY_ID</code>
-        <code>{prefix}_SECRET_ACCESS_KEY</code>
-        <code>{prefix}_REGIONS</code>
+        <code>{credentialRef}.csv</code>
       </div>
     </section>
   );
@@ -168,6 +180,248 @@ function NoEnvironmentsState() {
   );
 }
 
+function EnvironmentManager({
+  environments,
+  token,
+  onClose,
+  onChanged,
+}: {
+  environments: EnvironmentSummary[];
+  token: string;
+  onClose: () => void;
+  onChanged: (preferredEnvironmentId?: string, deletedId?: string) => void;
+}) {
+  const [form, setForm] = useState(emptyEnvironmentForm);
+  const [saving, setSaving] = useState(false);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+
+  const headers = {
+    "Content-Type": "application/json",
+    ...(token ? { "x-cloudboard-token": token } : {}),
+  };
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setMutationError(null);
+    try {
+      const response = await fetch("/api/environments", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          ...form,
+          regions: form.regions[0]
+            .split(",")
+            .map((region) => region.trim())
+            .filter(Boolean),
+          credentialRef: form.credentialRef || form.id.replaceAll("-", "_"),
+        }),
+      });
+      const body = (await response.json()) as EnvironmentSummary | ApiError;
+      if (!response.ok || !("id" in body)) {
+        throw new Error(
+          "error" in body ? body.error : "환경을 추가하지 못했습니다.",
+        );
+      }
+      setForm(emptyEnvironmentForm);
+      onChanged(body.id);
+    } catch (error) {
+      setMutationError(
+        error instanceof Error ? error.message : "환경을 추가하지 못했습니다.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(environment: EnvironmentSummary) {
+    if (
+      !window.confirm(
+        `${environment.name} (${environment.id}) 환경을 삭제할까요?\nAWS 자격 증명 파일과 비용 데이터는 삭제되지 않습니다.`,
+      )
+    ) {
+      return;
+    }
+
+    setSaving(true);
+    setMutationError(null);
+    try {
+      const response = await fetch(
+        `/api/environments/${encodeURIComponent(environment.id)}`,
+        {
+          method: "DELETE",
+          headers: token ? { "x-cloudboard-token": token } : {},
+        },
+      );
+      if (!response.ok) {
+        const body = (await response.json()) as ApiError;
+        throw new Error(body.error);
+      }
+      onChanged(undefined, environment.id);
+    } catch (error) {
+      setMutationError(
+        error instanceof Error ? error.message : "환경을 삭제하지 못했습니다.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="manager-backdrop" role="presentation">
+      <section
+        className="environment-manager"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="environment-manager-title"
+      >
+        <header className="manager-heading">
+          <div>
+            <span className="section-index">ENVIRONMENT SETTINGS</span>
+            <h2 id="environment-manager-title">AWS 환경 관리</h2>
+          </div>
+          <button
+            className="manager-close"
+            type="button"
+            onClick={onClose}
+            aria-label="환경 관리 닫기"
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="managed-environment-list">
+          {environments.map((environment) => (
+            <div className="managed-environment" key={environment.id}>
+              <span
+                className={`status-indicator ${
+                  environment.configured ? "ready" : "unconfigured"
+                }`}
+              />
+              <div>
+                <strong>{environment.name}</strong>
+                <span>
+                  {environment.group} · {environment.id} ·{" "}
+                  {environment.regions.join(", ")}
+                </span>
+                <small>
+                  Secret: {environment.credentialRef}.csv ·{" "}
+                  {environment.configured ? "연결됨" : "파일 없음"}
+                </small>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleDelete(environment)}
+                disabled={saving}
+              >
+                삭제
+              </button>
+            </div>
+          ))}
+          {environments.length === 0 && (
+            <p className="manager-empty">등록된 환경이 없습니다.</p>
+          )}
+        </div>
+
+        <form className="environment-form" onSubmit={handleSubmit}>
+          <div className="form-heading">
+            <strong>새 환경 추가</strong>
+            <span>AWS 키는 입력하지 않습니다. Secret 파일만 참조합니다.</span>
+          </div>
+          <label>
+            <span>환경 ID</span>
+            <input
+              required
+              value={form.id}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  id: event.target.value.toLowerCase(),
+                }))
+              }
+              placeholder="b2b-dev"
+              pattern="[a-z0-9](?:[a-z0-9]|-){0,62}"
+            />
+          </label>
+          <label>
+            <span>표시 이름</span>
+            <input
+              required
+              value={form.name}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  name: event.target.value,
+                }))
+              }
+              placeholder="B2B Development"
+              maxLength={80}
+            />
+          </label>
+          <label>
+            <span>그룹</span>
+            <input
+              required
+              value={form.group}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  group: event.target.value,
+                }))
+              }
+              placeholder="B2B"
+              maxLength={40}
+            />
+          </label>
+          <label>
+            <span>AWS 리전</span>
+            <input
+              required
+              value={form.regions[0]}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  regions: [event.target.value],
+                }))
+              }
+              placeholder="ap-northeast-2, us-east-1"
+            />
+          </label>
+          <label className="credential-reference">
+            <span>Secret 파일명</span>
+            <div>
+              <input
+                value={form.credentialRef}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    credentialRef: event.target.value.toLowerCase(),
+                  }))
+                }
+                placeholder="환경 ID에서 자동 생성"
+                pattern="[a-z0-9](?:[a-z0-9_]|-){0,63}"
+              />
+              <span>.csv</span>
+            </div>
+            <small>
+              로컬에서는 credentials 폴더, 배포 환경에서는 Secret volume에
+              같은 파일명으로 마운트합니다.
+            </small>
+          </label>
+          {mutationError && (
+            <p className="manager-error" role="alert">
+              {mutationError}
+            </p>
+          )}
+          <button className="add-environment-button" type="submit" disabled={saving}>
+            {saving ? "저장 중…" : "환경 추가"}
+          </button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 export function CloudBoardDashboard() {
   const [environments, setEnvironments] = useState<EnvironmentSummary[]>([]);
   const [environment, setEnvironment] = useState<EnvironmentId | null>(null);
@@ -177,13 +431,14 @@ export function CloudBoardDashboard() {
   const [environmentListLoading, setEnvironmentListLoading] = useState(true);
   const [loading, setLoading] = useState<EnvironmentId | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [managerOpen, setManagerOpen] = useState(false);
   const [token, setToken] = useState(() =>
     typeof window === "undefined"
       ? ""
       : (sessionStorage.getItem("cloudboard-access-token") ?? ""),
   );
 
-  const loadEnvironments = useCallback(async () => {
+  const loadEnvironments = useCallback(async (preferredEnvironmentId?: string) => {
     setEnvironmentListLoading(true);
     setError(null);
     try {
@@ -202,10 +457,17 @@ export function CloudBoardDashboard() {
       }
       setEnvironments(body.environments);
       setEnvironment((current) =>
-        current &&
-        body.environments.some((environmentItem) => environmentItem.id === current)
-          ? current
-          : (body.environments[0]?.id ?? null),
+        preferredEnvironmentId &&
+        body.environments.some(
+          (environmentItem) => environmentItem.id === preferredEnvironmentId,
+        )
+          ? preferredEnvironmentId
+          : current &&
+              body.environments.some(
+                (environmentItem) => environmentItem.id === current,
+              )
+            ? current
+            : (body.environments[0]?.id ?? null),
       );
     } catch (loadError) {
       setEnvironments([]);
@@ -235,6 +497,10 @@ export function CloudBoardDashboard() {
         });
         const body = (await response.json()) as EnvironmentReport | ApiError;
         if (!response.ok) {
+          if ("code" in body && body.code === "INVALID_ENVIRONMENT") {
+            await loadEnvironments();
+            return;
+          }
           throw new Error(body.error ?? "조회에 실패했습니다.");
         }
         setReports((current) => ({
@@ -251,7 +517,7 @@ export function CloudBoardDashboard() {
         setLoading(null);
       }
     },
-    [token],
+    [loadEnvironments, token],
   );
 
   useEffect(() => {
@@ -271,6 +537,9 @@ export function CloudBoardDashboard() {
   }, [environment, loadReport, reports]);
 
   const report = environment ? reports[environment] : undefined;
+  const selectedEnvironment = environments.find(
+    (item) => item.id === environment,
+  );
   const summary = useMemo(() => {
     if (!report) {
       return null;
@@ -336,6 +605,22 @@ export function CloudBoardDashboard() {
     }
   };
 
+  const handleEnvironmentsChanged = (
+    preferredEnvironmentId?: string,
+    deletedId?: string,
+  ) => {
+    if (deletedId) {
+      setEnvironment((current) => (current === deletedId ? null : current));
+      setError(null);
+      setReports((current) => {
+        const next = { ...current };
+        delete next[deletedId];
+        return next;
+      });
+    }
+    void loadEnvironments(preferredEnvironmentId);
+  };
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -388,6 +673,13 @@ export function CloudBoardDashboard() {
                 autoComplete="current-password"
               />
             </label>
+            <button
+              className="manage-environments-button"
+              type="button"
+              onClick={() => setManagerOpen(true)}
+            >
+              환경 관리
+            </button>
             <button
               className="refresh-button"
               type="button"
@@ -484,12 +776,12 @@ export function CloudBoardDashboard() {
           <LoadingState />
         ) : report?.status === "unconfigured" ? (
           <EmptyState
-            environment={report.id}
+            credentialRef={selectedEnvironment?.credentialRef ?? report.id}
             message={report.error ?? "AWS 환경 설정이 필요합니다."}
           />
         ) : report?.status === "failed" ? (
           <EmptyState
-            environment={report.id}
+            credentialRef={selectedEnvironment?.credentialRef ?? report.id}
             message={report.error ?? "AWS 연결을 확인해 주세요."}
           />
         ) : report && summary ? (
@@ -755,6 +1047,14 @@ export function CloudBoardDashboard() {
           </>
         ) : null}
       </main>
+      {managerOpen && (
+        <EnvironmentManager
+          environments={environments}
+          token={token}
+          onClose={() => setManagerOpen(false)}
+          onChanged={handleEnvironmentsChanged}
+        />
+      )}
     </div>
   );
 }

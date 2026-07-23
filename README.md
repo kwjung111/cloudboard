@@ -65,8 +65,9 @@ Cost Explorer 조회 기간은 오늘을 제외한 최근 30개의 완료된 UTC
 
 ## Docker 실행
 
-Docker Compose는 로컬 CSV 키 파일을 Docker secret으로 마운트합니다. 키는 이미지,
-빌드 컨텍스트, Git 또는 일반 환경 변수에 포함되지 않습니다.
+Docker Compose는 환경 설정 SQLite DB를 named volume에 저장하고, 로컬 CSV 키
+파일은 읽기 전용 volume으로 마운트합니다. 키는 SQLite, 이미지, 빌드 컨텍스트,
+Git 또는 일반 환경 변수에 포함되지 않습니다.
 
 ```powershell
 $env:DEPLOYMENT_VERSION = git rev-parse --short HEAD
@@ -82,36 +83,27 @@ docker compose ps
 롤링 배포 중 버전 불일치를 감지하고 새 문서로 자동 전환합니다. HTML 문서는
 캐시하지 않고, 콘텐츠 해시가 포함된 JavaScript와 CSS만 장기 캐시합니다.
 
-## 환경 설정
+## 환경 추가와 삭제
 
-환경 목록은 [config/environments.json](./config/environments.json)에서 관리합니다.
-애플리케이션은 이 파일을 요청 시점에 다시 읽으므로 코드 빌드나 서버 재시작 없이
-환경을 추가하고 화면의 `새로고침`을 누르면 반영됩니다.
+화면 오른쪽 위의 `환경 관리`에서 환경을 추가하거나 삭제합니다. 변경 내용은
+`/app/data/cloudboard.db`의 SQLite에 즉시 저장되며 컨테이너 재시작과 이미지
+재배포 후에도 유지됩니다.
 
-```json
-{
-  "environments": [
-    {
-      "id": "b2b-dev",
-      "name": "B2B Development",
-      "group": "B2B",
-      "regions": ["ap-northeast-2"],
-      "credentialsFile": "/run/cloudboard-credentials/b2b-dev.csv"
-    },
-    {
-      "id": "b2c-prd",
-      "name": "B2C Production",
-      "group": "B2C",
-      "regions": ["ap-northeast-2", "us-east-1"],
-      "credentialsFile": "/run/cloudboard-credentials/b2c-prd.csv"
-    }
-  ]
-}
-```
+환경 설정에는 다음 값만 저장합니다.
+
+- 환경 ID: `b2b-dev`처럼 소문자, 숫자, 하이픈으로 구성한 고유 ID
+- 표시 이름과 그룹: 화면에 표시할 이름 및 B2B/B2C 같은 업무 구분
+- AWS 리전: 쉼표로 구분한 조회 대상 리전
+- Secret 파일명: 확장자를 제외한 자격 증명 파일 참조
+
+[config/environments.json](./config/environments.json)은 빈 DB의 최초 실행에서만
+DEV/PRD 기본값을 만드는 bootstrap 파일입니다. bootstrap 완료 이후에는 파일이
+바뀌어도 사용자가 추가하거나 삭제한 환경을 덮어쓰지 않습니다.
 
 자격 증명 CSV는 로컬 `credentials` 디렉터리에 저장합니다. 이 디렉터리의 파일은
-Git과 Docker 이미지에서 제외되며 컨테이너의 `/run/cloudboard-credentials`에
-읽기 전용으로 마운트됩니다.
+Git과 Docker 이미지에서 제외되며 Compose에서는
+`/run/cloudboard-dynamic-credentials`에 읽기 전용으로 마운트됩니다. 서버는
+기본 Secret 경로와 이 동적 경로를 모두 조회합니다.
 
 ```text
 credentials/
@@ -122,29 +114,64 @@ credentials/
 ```
 
 CSV 형식은 AWS가 발급하는 `Access key ID,Secret access key` 헤더 형식을
-사용합니다. 환경 ID는 소문자, 숫자, 하이픈 조합으로 지정하며 개수 제한은
-없습니다. `group`은 화면에서 B2B/B2C 같은 업무 영역을 구분할 때 사용합니다.
+사용합니다. 환경을 삭제해도 자격 증명 파일과 AWS 자원은 삭제하지 않습니다.
 
-Kubernetes에서는 JSON 파일 대신 `CLOUDBOARD_ENVIRONMENTS_JSON`을 ConfigMap으로
-주입할 수 있습니다. `credentialsFile`은 Kubernetes Secret 또는 외부 Secret
-Store가 마운트한 경로를 지정합니다.
+REST API로도 같은 작업을 수행할 수 있습니다.
 
-기존 환경 변수 방식도 호환됩니다.
+```http
+POST /api/environments
+Content-Type: application/json
+
+{
+  "id": "b2b-dev",
+  "name": "B2B Development",
+  "group": "B2B",
+  "regions": ["ap-northeast-2"],
+  "credentialRef": "b2b-dev"
+}
+```
+
+```http
+DELETE /api/environments/b2b-dev
+```
+
+`CLOUDBOARD_ACCESS_TOKEN`이 설정된 경우 두 요청 모두
+`x-cloudboard-token` 헤더가 필요합니다.
+
+환경 변수로 자격 증명을 주입할 때는 환경 ID에서 만든 prefix를 사용합니다.
+예를 들어 `b2b-dev`는 `AWS_B2B_DEV_ACCESS_KEY_ID`와
+`AWS_B2B_DEV_SECRET_ACCESS_KEY`를 조회합니다.
 
 ```dotenv
 DEPLOYMENT_VERSION=local
-CLOUDBOARD_ENVIRONMENTS_FILE=./config/environments.json
-AWS_DEV_NAME=Development
+CLOUDBOARD_DATABASE_PATH=./data/cloudboard.db
+CLOUDBOARD_ENVIRONMENTS_BOOTSTRAP_FILE=./config/environments.json
+CLOUDBOARD_CREDENTIALS_DIR=./credentials
 AWS_DEV_ACCESS_KEY_ID=
 AWS_DEV_SECRET_ACCESS_KEY=
 AWS_DEV_SESSION_TOKEN=
-AWS_DEV_REGIONS=ap-northeast-2
-AWS_DEV_CREDENTIALS_FILE=./dev-readonly_accessKeys.csv
 ```
 
 운영 환경에서는 정적 키보다 워크로드 아이덴티티와 AssumeRole을 권장합니다.
 `CLOUDBOARD_ACCESS_TOKEN`을 설정하면 API가 `x-cloudboard-token` 헤더를
 요구합니다.
+
+## GitOps 배포
+
+애플리케이션 이미지는 SQLite 파일을 포함하지 않습니다. 배포 매니페스트는 다음
+두 경로를 반드시 별도 volume으로 마운트해야 합니다.
+
+- `/app/data`: ReadWriteOnce PVC 또는 단일 인스턴스용 영속 volume
+- `/run/cloudboard-credentials`: Kubernetes Secret 또는 외부 Secret Store의
+  읽기 전용 volume
+
+SQLite는 단일 writer 구조이므로 하나의 DB volume을 여러 Pod가 동시에 공유하지
+않습니다. 기본 배포 replica는 1로 두고, 고가용성이 필요하면 환경 저장소를
+PostgreSQL 같은 외부 DB로 교체해야 합니다.
+
+GitHub Actions는 lint와 production build를 실행하고, SQLite DB나 AWS 키 파일이
+Git에 추적되면 빌드를 중단합니다. GitOps 매니페스트 저장소를 갱신하기 전에는
+위 두 mount 경로가 매니페스트에 있는지도 검사합니다.
 
 ## 검증
 
@@ -156,5 +183,5 @@ npm test
 docker compose build
 ```
 
-Next.js standalone 이미지와 `/api/health`를 기준으로 GitOps 배포 파이프라인,
-Kubernetes Secret 또는 외부 Secret Store 연동으로 확장할 수 있습니다.
+Next.js standalone 이미지와 `/api/health`를 기준으로 readiness/liveness probe를
+설정할 수 있습니다.

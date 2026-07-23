@@ -63,7 +63,7 @@ function unavailableReport(
 
 function configurationError(): Response {
   const body: ApiError = {
-    error: "환경 설정 파일을 확인해 주세요.",
+    error: "환경 저장소를 확인해 주세요.",
     code: "CONFIGURATION_ERROR",
   };
   return Response.json(body, { status: 500 });
@@ -90,7 +90,7 @@ export async function GET(request: Request) {
     environment = getEnvironmentSummary(environmentId);
   } catch (error) {
     console.error(
-      "CloudBoard environment configuration failed",
+      "CloudBoard environment lookup failed",
       error instanceof Error ? { name: error.name, message: error.message } : {},
     );
     return configurationError();

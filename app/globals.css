@@ -266,6 +266,24 @@ summary {
   cursor: pointer;
 }
 
+.manage-environments-button {
+  height: 44px;
+  padding: 0 15px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.manage-environments-button:hover,
+.manage-environments-button:focus-visible {
+  border-color: var(--green);
+  color: var(--green);
+}
+
 .refresh-button:disabled {
   cursor: wait;
   opacity: 0.6;
@@ -1054,6 +1072,217 @@ summary {
   font-size: 9px;
 }
 
+.manager-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  justify-items: end;
+  background: rgba(8, 28, 22, 0.42);
+  backdrop-filter: blur(3px);
+}
+
+.environment-manager {
+  width: min(620px, 100%);
+  height: 100%;
+  overflow-y: auto;
+  padding: 28px;
+  border-left: 1px solid var(--line);
+  background: var(--page);
+  box-shadow: -20px 0 60px rgba(8, 28, 22, 0.16);
+}
+
+.manager-heading,
+.managed-environment,
+.form-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.manager-heading {
+  margin-bottom: 24px;
+}
+
+.manager-heading h2 {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: -0.04em;
+}
+
+.manager-close {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink);
+  font-size: 24px;
+  cursor: pointer;
+}
+
+.managed-environment-list {
+  display: grid;
+  border-top: 1px solid var(--line);
+}
+
+.managed-environment {
+  min-height: 82px;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.managed-environment > div {
+  min-width: 0;
+  display: grid;
+  flex: 1;
+  gap: 3px;
+}
+
+.managed-environment strong {
+  font-size: 13px;
+}
+
+.managed-environment span,
+.managed-environment small {
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.managed-environment button {
+  min-width: 54px;
+  min-height: 36px;
+  border: 1px solid #e4b9b4;
+  border-radius: 4px;
+  background: transparent;
+  color: #9b3e36;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.managed-environment button:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+.manager-empty {
+  margin: 0;
+  padding: 28px 0;
+  color: var(--ink-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.environment-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 30px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.form-heading,
+.credential-reference,
+.manager-error,
+.add-environment-button {
+  grid-column: 1 / -1;
+}
+
+.form-heading {
+  align-items: flex-end;
+  margin-bottom: 4px;
+}
+
+.form-heading strong {
+  font-size: 15px;
+}
+
+.form-heading > span {
+  color: var(--ink-muted);
+  font-size: 9px;
+}
+
+.environment-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.environment-form input {
+  width: 100%;
+  height: 42px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.environment-form input:focus {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(30, 107, 79, 0.1);
+}
+
+.credential-reference > div {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.credential-reference > div > span {
+  height: 42px;
+  display: grid;
+  place-items: center;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-left: 0;
+  background: #f4f5f0;
+  color: var(--ink-muted);
+}
+
+.credential-reference small {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.manager-error {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #e4b9b4;
+  background: #fff3f1;
+  color: #8e342d;
+  font-size: 11px;
+}
+
+.add-environment-button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--green);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.add-environment-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .loading-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1191,6 +1420,21 @@ summary {
   .topbar-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .environment-manager {
+    padding: 20px;
+  }
+
+  .environment-form {
+    grid-template-columns: 1fr;
+    padding: 18px;
+  }
+
+  .form-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
   }
 
   .token-field input {

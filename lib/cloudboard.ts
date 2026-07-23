@@ -5,11 +5,20 @@ export interface EnvironmentSummary {
   name: string;
   group: string;
   regions: string[];
+  credentialRef: string;
   configured: boolean;
 }
 
 export interface EnvironmentsResponse {
   environments: EnvironmentSummary[];
+}
+
+export interface EnvironmentInput {
+  id: EnvironmentId;
+  name: string;
+  group: string;
+  regions: string[];
+  credentialRef: string;
 }
 
 export type ServiceKey =
@@ -114,6 +123,8 @@ export interface ApiError {
   code:
     | "UNAUTHORIZED"
     | "INVALID_ENVIRONMENT"
+    | "ENVIRONMENT_EXISTS"
+    | "ENVIRONMENT_NOT_FOUND"
     | "CONFIGURATION_ERROR"
     | "INTERNAL_ERROR";
 }

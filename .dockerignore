@@ -6,6 +6,10 @@
 .wrangler
 dist
 node_modules
+data
+*.db
+*.db-shm
+*.db-wal
 *.csv
 .env
 .env.*

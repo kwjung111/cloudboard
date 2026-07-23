@@ -6,7 +6,7 @@ WORKDIR /app
 
 FROM base AS dependencies
 COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 
 FROM base AS builder
 ARG DEPLOYMENT_VERSION=local
@@ -21,11 +21,16 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
-ENV CLOUDBOARD_ENVIRONMENTS_FILE=/app/config/environments.json
+ENV CLOUDBOARD_DATABASE_PATH=/app/data/cloudboard.db
+ENV CLOUDBOARD_ENVIRONMENTS_BOOTSTRAP_FILE=/app/config/environments.json
+ENV CLOUDBOARD_CREDENTIALS_DIR=/run/cloudboard-credentials
+ENV CLOUDBOARD_DYNAMIC_CREDENTIALS_DIR=/run/cloudboard-dynamic-credentials
 WORKDIR /app
 
 RUN groupadd --system --gid 1001 nodejs \
-  && useradd --system --uid 1001 --gid nodejs nextjs
+  && useradd --system --uid 1001 --gid nodejs nextjs \
+  && mkdir -p /app/data /run/cloudboard-credentials /run/cloudboard-dynamic-credentials \
+  && chown nextjs:nodejs /app/data /run/cloudboard-credentials /run/cloudboard-dynamic-credentials
 
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
