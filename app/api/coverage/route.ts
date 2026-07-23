@@ -10,6 +10,7 @@ import type {
 } from "../../../lib/cloudboard";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const cache = new Map<
   EnvironmentId,
@@ -106,7 +107,13 @@ export async function GET(request: Request) {
     return Response.json(report, {
       headers: { "Cache-Control": "no-store" },
     });
-  } catch {
+  } catch (error) {
+    console.error(
+      "CloudBoard scan failed",
+      error instanceof Error
+        ? { name: error.name, message: error.message, stack: error.stack }
+        : { name: "UnknownError" },
+    );
     const body: ApiError = {
       error: "AWS 자원 조회를 완료하지 못했습니다.",
       code: "INTERNAL_ERROR",

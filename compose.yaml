@@ -1,0 +1,24 @@
+services:
+  cloudboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cloudboard:local
+    container_name: cloudboard
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      AWS_DEV_CREDENTIALS_FILE: /run/secrets/aws_dev_credentials
+      AWS_DEV_REGIONS: ap-northeast-2
+      AWS_PRD_CREDENTIALS_FILE: /run/secrets/aws_prd_credentials
+      AWS_PRD_REGIONS: ap-northeast-2
+    secrets:
+      - aws_dev_credentials
+      - aws_prd_credentials
+
+secrets:
+  aws_dev_credentials:
+    file: ./dev-readonly_accessKeys.csv
+  aws_prd_credentials:
+    file: ./prd-readonly_accessKeys.csv

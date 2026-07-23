@@ -7,31 +7,40 @@ import {
   DescribeInstancesCommand,
   DescribeReservedInstancesCommand,
   EC2Client,
+  type DescribeInstancesCommandOutput,
 } from "@aws-sdk/client-ec2";
 import {
   DescribeCacheClustersCommand,
   DescribeReservedCacheNodesCommand,
   ElastiCacheClient,
+  type DescribeCacheClustersCommandOutput,
+  type DescribeReservedCacheNodesCommandOutput,
 } from "@aws-sdk/client-elasticache";
 import {
   DescribeDomainsCommand,
   DescribeReservedInstancesCommand as DescribeOpenSearchReservedInstancesCommand,
   ListDomainNamesCommand,
   OpenSearchClient,
+  type DescribeReservedInstancesCommandOutput as DescribeOpenSearchReservedInstancesCommandOutput,
 } from "@aws-sdk/client-opensearch";
 import {
   DescribeDBInstancesCommand,
   DescribeReservedDBInstancesCommand,
   RDSClient,
+  type DescribeDBInstancesCommandOutput,
+  type DescribeReservedDBInstancesCommandOutput,
 } from "@aws-sdk/client-rds";
 import {
   DescribeClustersCommand,
   DescribeReservedNodesCommand,
   RedshiftClient,
+  type DescribeClustersCommandOutput,
+  type DescribeReservedNodesCommandOutput,
 } from "@aws-sdk/client-redshift";
 import {
   DescribeSavingsPlansCommand,
   SavingsplansClient,
+  type DescribeSavingsPlansCommandOutput,
 } from "@aws-sdk/client-savingsplans";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import type { AwsEnvironmentConfig } from "./aws-config";
@@ -180,7 +189,7 @@ async function scanEc2(
   let nextToken: string | undefined;
 
   do {
-    const response = await client.send(
+    const response: DescribeInstancesCommandOutput = await client.send(
       new DescribeInstancesCommand({
         Filters: [{ Name: "instance-state-name", Values: ["running"] }],
         NextToken: nextToken,
@@ -230,7 +239,7 @@ async function scanRds(
   let marker: string | undefined;
 
   do {
-    const response = await client.send(
+    const response: DescribeDBInstancesCommandOutput = await client.send(
       new DescribeDBInstancesCommand({ Marker: marker }),
     );
     for (const instance of response.DBInstances ?? []) {
@@ -247,7 +256,8 @@ async function scanRds(
 
   marker = undefined;
   do {
-    const response = await client.send(
+    const response: DescribeReservedDBInstancesCommandOutput =
+      await client.send(
       new DescribeReservedDBInstancesCommand({ Marker: marker }),
     );
     for (const reservation of response.ReservedDBInstances ?? []) {
@@ -280,7 +290,7 @@ async function scanElastiCache(
   let marker: string | undefined;
 
   do {
-    const response = await client.send(
+    const response: DescribeCacheClustersCommandOutput = await client.send(
       new DescribeCacheClustersCommand({ Marker: marker }),
     );
     for (const cluster of response.CacheClusters ?? []) {
@@ -297,7 +307,8 @@ async function scanElastiCache(
 
   marker = undefined;
   do {
-    const response = await client.send(
+    const response: DescribeReservedCacheNodesCommandOutput =
+      await client.send(
       new DescribeReservedCacheNodesCommand({ Marker: marker }),
     );
     for (const reservation of response.ReservedCacheNodes ?? []) {
@@ -330,7 +341,7 @@ async function scanRedshift(
   let marker: string | undefined;
 
   do {
-    const response = await client.send(
+    const response: DescribeClustersCommandOutput = await client.send(
       new DescribeClustersCommand({ Marker: marker }),
     );
     for (const cluster of response.Clusters ?? []) {
@@ -347,7 +358,7 @@ async function scanRedshift(
 
   marker = undefined;
   do {
-    const response = await client.send(
+    const response: DescribeReservedNodesCommandOutput = await client.send(
       new DescribeReservedNodesCommand({ Marker: marker }),
     );
     for (const reservation of response.ReservedNodes ?? []) {
@@ -406,7 +417,8 @@ async function scanOpenSearch(
 
   let nextToken: string | undefined;
   do {
-    const response = await client.send(
+    const response: DescribeOpenSearchReservedInstancesCommandOutput =
+      await client.send(
       new DescribeOpenSearchReservedInstancesCommand({
         NextToken: nextToken,
         MaxResults: 100,
@@ -497,7 +509,7 @@ async function listSavingsPlans(config: AwsEnvironmentConfig) {
   let nextToken: string | undefined;
 
   do {
-    const response = await client.send(
+    const response: DescribeSavingsPlansCommandOutput = await client.send(
       new DescribeSavingsPlansCommand({
         states: ["active"],
         nextToken,

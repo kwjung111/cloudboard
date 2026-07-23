@@ -129,7 +129,7 @@ export function CloudBoardDashboard() {
         });
         const body = (await response.json()) as EnvironmentReport | ApiError;
         if (!response.ok) {
-          throw new Error("error" in body ? body.error : "조회에 실패했습니다.");
+          throw new Error(body.error ?? "조회에 실패했습니다.");
         }
         setReports((current) => ({
           ...current,

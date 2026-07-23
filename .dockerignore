@@ -1,0 +1,13 @@
+.git
+.github
+.next
+.npm-cache
+.vinext
+.wrangler
+dist
+node_modules
+*.csv
+.env
+.env.*
+!.env.example
+npm-debug.log*
