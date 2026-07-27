@@ -52,11 +52,33 @@ function unavailableReport(
         coverage: { value: null, status: "unavailable", message: null },
         utilization: { value: null, status: "unavailable", message: null },
         netSavingsUsd: { value: null, status: "unavailable", message: null },
+        unusedCommitmentUsd: {
+          value: null,
+          status: "unavailable",
+          message: null,
+        },
+        uncoveredOnDemandUsd: {
+          value: null,
+          status: "unavailable",
+          message: null,
+        },
+        daily: [],
       },
       savingsPlans: {
         coverage: { value: null, status: "unavailable", message: null },
         utilization: { value: null, status: "unavailable", message: null },
         netSavingsUsd: { value: null, status: "unavailable", message: null },
+        unusedCommitmentUsd: {
+          value: null,
+          status: "unavailable",
+          message: null,
+        },
+        uncoveredOnDemandUsd: {
+          value: null,
+          status: "unavailable",
+          message: null,
+        },
+        daily: [],
       },
     },
     reservations: [],
