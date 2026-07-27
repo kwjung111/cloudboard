@@ -10,6 +10,25 @@ AWS 계정의 RI와 Savings Plans 성과를 읽기 전용으로 조회하는 비
 - Net Savings: 동일 사용량의 On-Demand 비용과 비교한 최근 30일 순절감액
 - Expiration: 활성 RI와 Savings Plans의 만료일 및 남은 일수
 
+## 일일 비용 이상 리포트
+
+AI 모델 없이 AWS Cost Explorer의 `NetAmortizedCost`를 통계 기준으로
+분석합니다. AWS가 `Estimated=false`로 반환한 가장 최근 일자를 기준으로
+직전 확정일과 최근 4주의 동일 요일 중앙값을 함께 보여줍니다.
+
+기본 이상 판정은 동일 요일 중앙값보다 20% 이상이면서 100 USD 이상 증가한
+경우입니다. 두 기준은 환경 변수로 조정할 수 있습니다.
+
+```dotenv
+CLOUDBOARD_COST_ANOMALY_RELATIVE_PERCENTAGE=20
+CLOUDBOARD_COST_ANOMALY_ABSOLUTE_USD=100
+```
+
+`cloudboard-reporter` 컨테이너는 기동 직후 한 번 리포트를 만들고, 이후 매일
+오전 6시(Asia/Seoul)에 생성 API를 호출합니다. 결과는 SQLite에 환경과
+기준일 조합으로 저장되어 같은 기준일이 중복 추가되지 않습니다. 알림 채널
+연동은 저장된 리포트를 그대로 사용하도록 후속 단계로 분리되어 있습니다.
+
 Coverage가 높을수록 더 많은 사용량에 할인이 적용됩니다. Utilization이 높을수록
 구매한 약정을 낭비하지 않고 있다는 뜻입니다. 안정적인 약정 운영을 판단하려면
 두 지표를 함께 봐야 합니다.

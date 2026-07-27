@@ -14,6 +14,9 @@ import type {
   ApiError,
   CommitmentDailyMetric,
   CommitmentMetricSet,
+  CostAnomalyReport,
+  CostReportResponse,
+  CostReportRunResponse,
   EnvironmentId,
   EnvironmentInput,
   EnvironmentReport,
@@ -56,6 +59,21 @@ function formatCurrency(value: number | null) {
         currency: "USD",
         maximumFractionDigits: 2,
       }).format(value);
+}
+
+function formatSignedCurrency(value: number | null) {
+  if (value === null) {
+    return "—";
+  }
+  const prefix = value > 0 ? "+" : "";
+  return `${prefix}${formatCurrency(value)}`;
+}
+
+function formatSignedPercentage(value: number | null) {
+  if (value === null) {
+    return "—";
+  }
+  return `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
 }
 
 function formatAccountId(value: string | null) {
@@ -224,6 +242,125 @@ function CostExposureCard({
       <strong>{metricText(metric, "currency")}</strong>
       <span>최근 완료 30일</span>
     </article>
+  );
+}
+
+function CostAnomalyPanel({
+  report,
+  loading,
+  onGenerate,
+}: {
+  report: CostAnomalyReport | null | undefined;
+  loading: boolean;
+  onGenerate: () => void;
+}) {
+  if (!report) {
+    return (
+      <section className="cost-anomaly-panel empty" id="daily-cost">
+        <div>
+          <span className="section-index">DAILY COST CHECK</span>
+          <h2>일일 비용 이상 리포트</h2>
+          <p>
+            집계 완료된 최신 AWS 비용을 최근 동일 요일과 비교합니다.
+          </p>
+        </div>
+        <button type="button" onClick={onGenerate} disabled={loading}>
+          {loading ? "분석 중…" : "지금 분석"}
+        </button>
+      </section>
+    );
+  }
+
+  const statusLabel = {
+    anomaly: "비용 증가 감지",
+    normal: "정상 범위",
+    "insufficient-data": "비교 데이터 부족",
+  }[report.status];
+
+  return (
+    <section
+      className={`cost-anomaly-panel ${report.status}`}
+      id="daily-cost"
+      aria-labelledby="daily-cost-title"
+    >
+      <div className="cost-anomaly-heading">
+        <div>
+          <span className="section-index">DAILY COST CHECK / AWS UTC</span>
+          <h2 id="daily-cost-title">일일 비용 이상 리포트</h2>
+        </div>
+        <div className="cost-anomaly-actions">
+          <span className={`cost-anomaly-status ${report.status}`}>
+            {statusLabel}
+          </span>
+          <button type="button" onClick={onGenerate} disabled={loading}>
+            {loading ? "분석 중…" : "다시 분석"}
+          </button>
+        </div>
+      </div>
+
+      <div className="cost-anomaly-summary">
+        <div className="cost-anomaly-primary">
+          <span>확정 비용 · {report.basisDate}</span>
+          <strong>{formatCurrency(report.totalCostUsd)}</strong>
+          <small>
+            최신 확정 데이터 D-{report.freshnessDays} · Net Amortized Cost
+          </small>
+        </div>
+        <div>
+          <TermWithTooltip
+            label="최근 동일 요일 중앙값"
+            description="기준일과 같은 요일인 최근 4주 비용의 중앙값입니다. 특정 하루의 급등락에 평균보다 덜 흔들립니다."
+          />
+          <strong>{formatCurrency(report.weekdayMedianUsd)}</strong>
+          <span>
+            {formatSignedCurrency(report.weekdayChangeUsd)} ·{" "}
+            {formatSignedPercentage(report.weekdayChangePercentage)}
+          </span>
+        </div>
+        <div>
+          <TermWithTooltip
+            label="직전 확정일"
+            description="AWS에서 집계 완료로 표시된 기준일 바로 이전 일자입니다. 전일 추세 확인용이며 이상 판정의 주 기준은 동일 요일 중앙값입니다."
+          />
+          <strong>{formatCurrency(report.previousFinalizedCostUsd)}</strong>
+          <span>
+            {formatSignedCurrency(report.previousDayChangeUsd)} ·{" "}
+            {formatSignedPercentage(report.previousDayChangePercentage)}
+          </span>
+        </div>
+      </div>
+
+      <p className="cost-anomaly-message">
+        {report.message} 이상 판정 기준은 동일 요일 중앙값 대비{" "}
+        {report.thresholds.relativePercentage}% 이상이면서{" "}
+        {formatCurrency(report.thresholds.absoluteUsd)} 이상 증가입니다.
+      </p>
+
+      {report.topDrivers.length > 0 && (
+        <div className="cost-driver-list">
+          <div className="cost-driver-row table-head">
+            <span>비용 변동 서비스</span>
+            <span>기준일 비용</span>
+            <span>동일 요일 대비</span>
+          </div>
+          {report.topDrivers.map((driver) => (
+            <div className="cost-driver-row" key={driver.service}>
+              <strong>{driver.service}</strong>
+              <span>{formatCurrency(driver.costUsd)}</span>
+              <span
+                className={
+                  driver.changeUsd !== null && driver.changeUsd > 0
+                    ? "increase"
+                    : "decrease"
+                }
+              >
+                {formatSignedCurrency(driver.changeUsd)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -723,8 +860,13 @@ export function CloudBoardDashboard() {
   const [reports, setReports] = useState<
     Partial<Record<EnvironmentId, EnvironmentReport>>
   >({});
+  const [costReports, setCostReports] = useState<
+    Partial<Record<EnvironmentId, CostAnomalyReport | null>>
+  >({});
   const [environmentListLoading, setEnvironmentListLoading] = useState(true);
   const [loading, setLoading] = useState<EnvironmentId | null>(null);
+  const [costReportLoading, setCostReportLoading] =
+    useState<EnvironmentId | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [managerOpen, setManagerOpen] = useState(false);
   const [token, setToken] = useState(() =>
@@ -815,6 +957,52 @@ export function CloudBoardDashboard() {
     [loadEnvironments, token],
   );
 
+  const loadCostReport = useCallback(
+    async (environmentId: EnvironmentId, generate = false) => {
+      setCostReportLoading(environmentId);
+      try {
+        const query = new URLSearchParams({ environment: environmentId });
+        const response = await fetch(`/api/reports/daily-cost?${query}`, {
+          method: generate ? "POST" : "GET",
+          headers: token ? { "x-cloudboard-token": token } : {},
+          cache: "no-store",
+        });
+        const body = (await response.json()) as
+          | CostReportResponse
+          | CostReportRunResponse
+          | ApiError;
+        if (!response.ok) {
+          throw new Error(
+            "error" in body
+              ? body.error
+              : "일일 비용 리포트를 불러오지 못했습니다.",
+          );
+        }
+        const nextReport =
+          "reports" in body
+            ? (body.reports.find(
+                (item) => item.environmentId === environmentId,
+              ) ?? null)
+            : "report" in body
+              ? body.report
+              : null;
+        setCostReports((current) => ({
+          ...current,
+          [environmentId]: nextReport,
+        }));
+      } catch (loadError) {
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : "일일 비용 리포트를 불러오지 못했습니다.",
+        );
+      } finally {
+        setCostReportLoading(null);
+      }
+    },
+    [token],
+  );
+
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
       void loadEnvironments();
@@ -830,6 +1018,15 @@ export function CloudBoardDashboard() {
       return () => window.clearTimeout(timeoutId);
     }
   }, [environment, loadReport, reports]);
+
+  useEffect(() => {
+    if (environment && !(environment in costReports)) {
+      const timeoutId = window.setTimeout(() => {
+        void loadCostReport(environment);
+      }, 0);
+      return () => window.clearTimeout(timeoutId);
+    }
+  }, [costReports, environment, loadCostReport]);
 
   const report = environment ? reports[environment] : undefined;
   const selectedEnvironment = environments.find(
@@ -914,6 +1111,11 @@ export function CloudBoardDashboard() {
         delete next[deletedId];
         return next;
       });
+      setCostReports((current) => {
+        const next = { ...current };
+        delete next[deletedId];
+        return next;
+      });
     }
     void loadEnvironments(preferredEnvironmentId);
   };
@@ -984,6 +1186,7 @@ export function CloudBoardDashboard() {
                 void loadEnvironments();
                 if (environment) {
                   void loadReport(environment, true);
+                  void loadCostReport(environment);
                 }
               }}
               disabled={loading !== null || environmentListLoading}
@@ -1224,6 +1427,16 @@ export function CloudBoardDashboard() {
                 </div>
               )}
             </section>
+
+            <CostAnomalyPanel
+              report={environment ? costReports[environment] : undefined}
+              loading={costReportLoading === environment}
+              onGenerate={() => {
+                if (environment) {
+                  void loadCostReport(environment, true);
+                }
+              }}
+            />
 
             <section className="metric-guide" id="overview">
               <div>

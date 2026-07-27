@@ -127,6 +127,65 @@ export interface Finding {
   action: string | null;
 }
 
+export type CostAnomalyStatus =
+  | "normal"
+  | "anomaly"
+  | "insufficient-data";
+
+export interface DailyServiceCost {
+  service: string;
+  costUsd: number;
+}
+
+export interface DailyCostPoint {
+  date: string;
+  costUsd: number;
+  estimated: boolean;
+  services: DailyServiceCost[];
+}
+
+export interface CostDriver {
+  service: string;
+  costUsd: number;
+  baselineCostUsd: number | null;
+  changeUsd: number | null;
+}
+
+export interface CostAnomalyReport {
+  environmentId: EnvironmentId;
+  environmentName: string;
+  generatedAt: string;
+  basisDate: string;
+  freshnessDays: number;
+  metric: "NetAmortizedCost";
+  status: CostAnomalyStatus;
+  totalCostUsd: number;
+  weekdayMedianUsd: number | null;
+  weekdayChangeUsd: number | null;
+  weekdayChangePercentage: number | null;
+  previousFinalizedDate: string | null;
+  previousFinalizedCostUsd: number | null;
+  previousDayChangeUsd: number | null;
+  previousDayChangePercentage: number | null;
+  baselineDates: string[];
+  thresholds: {
+    relativePercentage: number;
+    absoluteUsd: number;
+  };
+  topDrivers: CostDriver[];
+  message: string;
+}
+
+export interface CostReportResponse {
+  report: CostAnomalyReport | null;
+}
+
+export interface CostReportRunResponse {
+  generatedAt: string;
+  reports: CostAnomalyReport[];
+  errors: Array<{ environmentId: string; message: string }>;
+}
+
 export interface EnvironmentReport {
   id: EnvironmentId;
   name: string;

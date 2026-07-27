@@ -178,7 +178,7 @@ function bootstrap(database: DatabaseInstance) {
   })();
 }
 
-function getDatabase(): DatabaseInstance {
+export function getCloudboardDatabase(): DatabaseInstance {
   if (globalDatabase.cloudboardDatabase) {
     return globalDatabase.cloudboardDatabase;
   }
@@ -207,7 +207,7 @@ function mapRow(row: EnvironmentRow): EnvironmentInput {
 }
 
 export function listEnvironments(): EnvironmentInput[] {
-  const rows = getDatabase()
+  const rows = getCloudboardDatabase()
     .prepare(`
       SELECT id, name, group_name, regions_json, credential_ref
       FROM environments
@@ -218,7 +218,7 @@ export function listEnvironments(): EnvironmentInput[] {
 }
 
 export function findEnvironment(id: string): EnvironmentInput | null {
-  const row = getDatabase()
+  const row = getCloudboardDatabase()
     .prepare(`
       SELECT id, name, group_name, regions_json, credential_ref
       FROM environments
@@ -231,7 +231,7 @@ export function findEnvironment(id: string): EnvironmentInput | null {
 export function createEnvironment(value: unknown): EnvironmentInput {
   const environment = parseEnvironmentInput(value);
   try {
-    getDatabase()
+    getCloudboardDatabase()
       .prepare(`
         INSERT INTO environments
           (id, name, group_name, regions_json, credential_ref)
@@ -264,7 +264,7 @@ export function deleteEnvironment(id: string) {
     throw new InvalidEnvironmentError("환경 ID 형식이 올바르지 않습니다.");
   }
 
-  const result = getDatabase()
+  const result = getCloudboardDatabase()
     .prepare("DELETE FROM environments WHERE id = ?")
     .run(id);
   if (result.changes === 0) {
