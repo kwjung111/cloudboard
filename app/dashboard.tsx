@@ -300,10 +300,13 @@ function CostAnomalyPanel({
 
       <div className="cost-anomaly-summary">
         <div className="cost-anomaly-primary">
-          <span>확정 비용 · {report.basisDate}</span>
+          <span>
+            최신 완료 UTC 일자 · {report.basisDate}
+            {report.costIsEstimated ? " · 당월 잠정치" : ""}
+          </span>
           <strong>{formatCurrency(report.totalCostUsd)}</strong>
           <small>
-            최신 확정 데이터 D-{report.freshnessDays} · Net Amortized Cost
+            AWS UTC 기준 D-{report.freshnessDays} · Net Amortized Cost
           </small>
         </div>
         <div>
@@ -319,8 +322,8 @@ function CostAnomalyPanel({
         </div>
         <div>
           <TermWithTooltip
-            label="직전 확정일"
-            description="AWS에서 집계 완료로 표시된 기준일 바로 이전 일자입니다. 전일 추세 확인용이며 이상 판정의 주 기준은 동일 요일 중앙값입니다."
+            label="직전 비용일"
+            description="최신 완료 UTC 일자의 바로 이전 비용 일자입니다. 전일 추세 확인용이며 이상 판정의 주 기준은 동일 요일 중앙값입니다."
           />
           <strong>{formatCurrency(report.previousFinalizedCostUsd)}</strong>
           <span>

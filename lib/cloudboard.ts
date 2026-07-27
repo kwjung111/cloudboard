@@ -157,6 +157,7 @@ export interface CostAnomalyReport {
   generatedAt: string;
   basisDate: string;
   freshnessDays: number;
+  costIsEstimated: boolean;
   metric: "NetAmortizedCost";
   status: CostAnomalyStatus;
   totalCostUsd: number;

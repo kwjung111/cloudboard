@@ -17,7 +17,7 @@ function point(
   };
 }
 
-test("uses the latest finalized date and the same-weekday median", () => {
+test("uses the latest completed UTC date even when the month is estimated", () => {
   const report = analyzeDailyCosts(
     { id: "dev", name: "Development" },
     [
@@ -27,10 +27,36 @@ test("uses the latest finalized date and the same-weekday median", () => {
       point("2026-07-19", 130),
       point("2026-07-25", 90),
       point("2026-07-26", 180),
-      point("2026-07-27", 999, true),
+      point("2026-07-27", 190, true),
     ],
     { relativePercentage: 20, absoluteUsd: 50 },
     new Date("2026-07-28T00:00:00.000Z"),
+  );
+
+  assert.ok(report);
+  assert.equal(report.basisDate, "2026-07-27");
+  assert.equal(report.weekdayMedianUsd, null);
+  assert.equal(report.weekdayChangeUsd, null);
+  assert.equal(report.costIsEstimated, true);
+  assert.equal(report.status, "insufficient-data");
+  assert.equal(report.previousFinalizedDate, "2026-07-26");
+  assert.equal(report.previousDayChangeUsd, 10);
+  assert.equal(report.freshnessDays, 1);
+});
+
+test("uses the same-weekday median for an estimated current-month day", () => {
+  const report = analyzeDailyCosts(
+    { id: "dev", name: "Development" },
+    [
+      point("2026-06-28", 100),
+      point("2026-07-05", 120, true),
+      point("2026-07-12", 110, true),
+      point("2026-07-19", 130, true),
+      point("2026-07-25", 90, true),
+      point("2026-07-26", 180, true),
+    ],
+    { relativePercentage: 20, absoluteUsd: 50 },
+    new Date("2026-07-27T00:00:00.000Z"),
   );
 
   assert.ok(report);
@@ -40,7 +66,8 @@ test("uses the latest finalized date and the same-weekday median", () => {
   assert.equal(report.status, "anomaly");
   assert.equal(report.previousFinalizedDate, "2026-07-25");
   assert.equal(report.previousDayChangeUsd, 90);
-  assert.equal(report.freshnessDays, 2);
+  assert.equal(report.costIsEstimated, true);
+  assert.equal(report.freshnessDays, 1);
 });
 
 test("requires both relative and absolute thresholds", () => {
