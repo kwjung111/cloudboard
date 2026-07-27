@@ -118,15 +118,16 @@ export function analyzeDailyCosts(
   thresholds = costAnomalyThresholds(),
   now = new Date(),
 ): CostAnomalyReport | null {
-  const finalized = points
-    .filter((point) => !point.estimated)
+  const today = dateOnly(now);
+  const completedDays = points
+    .filter((point) => point.date < today)
     .sort((left, right) => left.date.localeCompare(right.date));
-  const current = finalized.at(-1);
+  const current = completedDays.at(-1);
   if (!current) {
     return null;
   }
 
-  const byDate = new Map(finalized.map((point) => [point.date, point]));
+  const byDate = new Map(completedDays.map((point) => [point.date, point]));
   const baselinePoints = [7, 14, 21, 28]
     .map((days) => {
       const date = new Date(`${current.date}T00:00:00.000Z`);
@@ -137,7 +138,7 @@ export function analyzeDailyCosts(
   const weekdayMedian = median(
     baselinePoints.map((point) => point.costUsd),
   );
-  const previous = finalized.at(-2) ?? null;
+  const previous = completedDays.at(-2) ?? null;
   const weekdayChange =
     weekdayMedian === null ? null : rounded(current.costUsd - weekdayMedian);
   const weekdayChangePercentage = percentageChange(
@@ -165,7 +166,6 @@ export function analyzeDailyCosts(
       : status === "insufficient-data"
         ? "동일 요일 기준을 만들기 위한 완료 데이터가 아직 부족합니다."
         : "설정한 증가율과 증가액 기준을 동시에 넘지 않았습니다.";
-  const today = dateOnly(now);
 
   return {
     environmentId: environment.id,
@@ -173,6 +173,7 @@ export function analyzeDailyCosts(
     generatedAt: now.toISOString(),
     basisDate: current.date,
     freshnessDays: Math.max(0, daysBetween(today, current.date)),
+    costIsEstimated: current.estimated,
     metric,
     status,
     totalCostUsd: rounded(current.costUsd),
