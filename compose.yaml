@@ -15,11 +15,25 @@ services:
       CLOUDBOARD_ENVIRONMENTS_BOOTSTRAP_FILE: /app/config/environments.json
       CLOUDBOARD_CREDENTIALS_DIR: /run/cloudboard-credentials
       CLOUDBOARD_DYNAMIC_CREDENTIALS_DIR: /run/cloudboard-dynamic-credentials
+      CLOUDBOARD_ACCESS_TOKEN: ${CLOUDBOARD_ACCESS_TOKEN:-}
     volumes:
       - cloudboard-data:/app/data
       - ./credentials:/run/cloudboard-dynamic-credentials:ro
       - ./dev-readonly_accessKeys.csv:/run/cloudboard-credentials/dev.csv:ro
       - ./prd-readonly_accessKeys.csv:/run/cloudboard-credentials/prd.csv:ro
+
+  cloudboard-reporter:
+    image: cloudboard:local
+    container_name: cloudboard-reporter
+    restart: unless-stopped
+    command: ["node", "worker/daily-cost-scheduler.mjs"]
+    depends_on:
+      cloudboard:
+        condition: service_healthy
+    environment:
+      CLOUDBOARD_DAILY_REPORT_URL: http://cloudboard:3000/api/reports/daily-cost
+      CLOUDBOARD_DAILY_REPORT_RUN_ON_START: "true"
+      CLOUDBOARD_ACCESS_TOKEN: ${CLOUDBOARD_ACCESS_TOKEN:-}
 
 volumes:
   cloudboard-data:
