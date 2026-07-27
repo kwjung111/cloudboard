@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -11,6 +12,7 @@ import {
 } from "react";
 import type {
   ApiError,
+  CommitmentDailyMetric,
   CommitmentMetricSet,
   EnvironmentId,
   EnvironmentInput,
@@ -21,10 +23,10 @@ import type {
 } from "../lib/cloudboard";
 
 const coverageLabels = {
-  good: "안정",
-  attention: "점검",
-  risk: "위험",
-  unknown: "대상 없음",
+  good: "80% 이상",
+  attention: "50–79%",
+  risk: "50% 미만",
+  unknown: "평가 불가",
 };
 
 const metricStatusLabels = {
@@ -92,6 +94,39 @@ function daysUntil(value: string) {
   );
 }
 
+function shortCommitmentId(value: string) {
+  return value.length > 22
+    ? `${value.slice(0, 10)}…${value.slice(-8)}`
+    : value;
+}
+
+function utilizationLevel(metric: MetricValue) {
+  if (metric.status !== "ready" || metric.value === null) {
+    return "unknown";
+  }
+  if (metric.value >= 80) {
+    return "good";
+  }
+  if (metric.value >= 60) {
+    return "attention";
+  }
+  return "risk";
+}
+
+function expiryLevel(end: string | null) {
+  if (!end) {
+    return "unknown";
+  }
+  const remaining = daysUntil(end);
+  if (remaining <= 30) {
+    return "urgent";
+  }
+  if (remaining <= 90) {
+    return "soon";
+  }
+  return "normal";
+}
+
 function metricText(metric: MetricValue, type: "percentage" | "currency") {
   if (metric.status !== "ready") {
     return metricStatusLabels[metric.status];
@@ -101,18 +136,51 @@ function metricText(metric: MetricValue, type: "percentage" | "currency") {
     : formatCurrency(metric.value);
 }
 
+function TermWithTooltip({
+  label,
+  description,
+}: {
+  label: string;
+  description: string;
+}) {
+  const tooltipId = useId();
+
+  return (
+    <span className="term-help">
+      <span>{label}</span>
+      <button
+        className="term-help-trigger"
+        type="button"
+        aria-label={`${label} 설명`}
+        aria-describedby={tooltipId}
+      >
+        ?
+      </button>
+      <span className="term-help-content" id={tooltipId} role="tooltip">
+        {description}
+      </span>
+    </span>
+  );
+}
+
 function MetricSummaryCard({
   title,
   eyebrow,
+  coverageDescription,
+  utilizationDescription,
   metrics,
 }: {
   title: string;
   eyebrow: string;
+  coverageDescription: string;
+  utilizationDescription: string;
   metrics: CommitmentMetricSet;
 }) {
   return (
     <article className={`summary-card metric-summary ${metrics.coverage.status}`}>
-      <span className="card-label">{title}</span>
+      <div className="card-label">
+        <TermWithTooltip label={title} description={coverageDescription} />
+      </div>
       <div className="metric-heading">
         <strong>{metricText(metrics.coverage, "percentage")}</strong>
         <span>{eyebrow}</span>
@@ -126,11 +194,187 @@ function MetricSummaryCard({
         </div>
       )}
       <div className="metric-secondary">
-        <span>약정 사용률</span>
+        <TermWithTooltip
+          label="약정 사용률"
+          description={utilizationDescription}
+        />
         <strong>{metricText(metrics.utilization, "percentage")}</strong>
       </div>
       {metrics.coverage.message && (
         <p className="metric-message">{metrics.coverage.message}</p>
+      )}
+    </article>
+  );
+}
+
+function CostExposureCard({
+  label,
+  description,
+  metric,
+  tone,
+}: {
+  label: string;
+  description: string;
+  metric: MetricValue;
+  tone: "waste" | "opportunity";
+}) {
+  return (
+    <article className={`cost-exposure-card ${tone} ${metric.status}`}>
+      <TermWithTooltip label={label} description={description} />
+      <strong>{metricText(metric, "currency")}</strong>
+      <span>최근 완료 30일</span>
+    </article>
+  );
+}
+
+function TrendChart({
+  title,
+  description,
+  data,
+}: {
+  title: string;
+  description: string;
+  data: CommitmentDailyMetric[];
+}) {
+  const width = 640;
+  const height = 190;
+  const padding = { top: 18, right: 18, bottom: 28, left: 38 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const x = (index: number) =>
+    padding.left +
+    (data.length <= 1 ? plotWidth / 2 : (index / (data.length - 1)) * plotWidth);
+  const y = (value: number) =>
+    padding.top + ((100 - value) / 100) * plotHeight;
+  const pathFor = (
+    value: (point: CommitmentDailyMetric) => number | null,
+  ) => {
+    let started = false;
+    return data
+      .map((point, index) => {
+        const current = value(point);
+        if (current === null) {
+          started = false;
+          return null;
+        }
+        const command = started ? "L" : "M";
+        started = true;
+        return `${command} ${x(index).toFixed(1)} ${y(current).toFixed(1)}`;
+      })
+      .filter((segment): segment is string => Boolean(segment))
+      .join(" ");
+  };
+
+  return (
+    <article className="trend-card">
+      <header>
+        <div>
+          <h3>{title}</h3>
+          <p>{description}</p>
+        </div>
+        <div className="trend-legend" aria-label="그래프 범례">
+          <span className="coverage">할인 적용률</span>
+          <span className="utilization">약정 사용률</span>
+        </div>
+      </header>
+      {data.length > 0 ? (
+        <>
+          <svg
+            className="trend-chart"
+            viewBox={`0 0 ${width} ${height}`}
+            role="img"
+            aria-label={`${title}의 최근 30일 할인 적용률과 약정 사용률 추세`}
+          >
+            {[0, 25, 50, 75, 100].map((value) => (
+              <g key={value}>
+                <line
+                  x1={padding.left}
+                  x2={width - padding.right}
+                  y1={y(value)}
+                  y2={y(value)}
+                  className="trend-grid-line"
+                />
+                <text x={4} y={y(value) + 3} className="trend-axis-label">
+                  {value}%
+                </text>
+              </g>
+            ))}
+            <path className="trend-line coverage" d={pathFor((point) => point.coveragePercentage)} />
+            <path
+              className="trend-line utilization"
+              d={pathFor((point) => point.utilizationPercentage)}
+            />
+            {data.map((point, index) => (
+              <g key={point.date}>
+                {point.coveragePercentage !== null && (
+                  <circle
+                    className="trend-point coverage"
+                    cx={x(index)}
+                    cy={y(point.coveragePercentage)}
+                    r="2.5"
+                  >
+                    <title>
+                      {point.date} 할인 적용률 {point.coveragePercentage}%
+                    </title>
+                  </circle>
+                )}
+                {point.utilizationPercentage !== null && (
+                  <circle
+                    className="trend-point utilization"
+                    cx={x(index)}
+                    cy={y(point.utilizationPercentage)}
+                    r="2.5"
+                  >
+                    <title>
+                      {point.date} 약정 사용률 {point.utilizationPercentage}%
+                    </title>
+                  </circle>
+                )}
+              </g>
+            ))}
+            <text
+              x={padding.left}
+              y={height - 6}
+              className="trend-date-label"
+            >
+              {data[0]?.date.slice(5)}
+            </text>
+            <text
+              x={width - padding.right}
+              y={height - 6}
+              textAnchor="end"
+              className="trend-date-label"
+            >
+              {data.at(-1)?.date.slice(5)}
+            </text>
+          </svg>
+          <table className="sr-only">
+            <caption>{title} 일별 지표</caption>
+            <thead>
+              <tr>
+                <th>날짜</th>
+                <th>할인 적용률</th>
+                <th>약정 사용률</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((point) => (
+                <tr key={point.date}>
+                  <td>{point.date}</td>
+                  <td>{formatPercentage(point.coveragePercentage)}</td>
+                  <td>{formatPercentage(point.utilizationPercentage)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="trend-table-summary">
+            일별 정확한 값은 그래프의 각 점에 마우스를 올려 확인할 수 있습니다.
+          </p>
+        </>
+      ) : (
+        <div className="trend-empty">
+          일별 추세를 만들 수 있는 비용 데이터가 없습니다.
+        </div>
       )}
     </article>
   );
@@ -324,7 +568,7 @@ function EnvironmentManager({
       >
         <header className="manager-heading">
           <div>
-            <span className="section-index">ENVIRONMENT SETTINGS</span>
+            <span className="section-index">AWS ENVIRONMENTS</span>
             <h2 id="environment-manager-title">AWS 환경 관리</h2>
           </div>
           <button
@@ -374,7 +618,10 @@ function EnvironmentManager({
         <form className="environment-form" onSubmit={handleSubmit}>
           <div className="form-heading">
             <strong>새 환경 추가</strong>
-            <span>AWS 키는 입력하지 않습니다. Secret 파일만 참조합니다.</span>
+            <span>
+              AWS 키 값은 저장하지 않고, 서버에 마운트된 자격 증명 파일명만
+              등록합니다.
+            </span>
           </div>
           <label>
             <span>환경 ID</span>
@@ -452,8 +699,8 @@ function EnvironmentManager({
               <span>.csv</span>
             </div>
             <small>
-              로컬에서는 credentials 폴더, 배포 환경에서는 Secret volume에
-              같은 파일명으로 마운트합니다.
+              확장자(.csv)를 제외한 이름입니다. 로컬에서는 credentials 폴더,
+              배포 환경에서는 읽기 전용 Secret volume에서 찾습니다.
             </small>
           </label>
           {mutationError && (
@@ -599,8 +846,9 @@ export function CloudBoardDashboard() {
         kind: "RI",
         title: reservation.service,
         detail: `${reservation.family} · ${reservation.region}`,
-        quantity: reservation.quantity,
-        amount: null,
+        reference: reservation.id,
+        commitment: `${reservation.quantity}개 RI`,
+        utilization: reservation.utilization,
         end: reservation.end,
       })),
       ...report.savingsPlans.map((plan) => ({
@@ -608,8 +856,9 @@ export function CloudBoardDashboard() {
         kind: "SP",
         title: `${plan.type} Savings Plan`,
         detail: plan.region ?? "Global",
-        quantity: 1,
-        amount: plan.hourlyCommitment,
+        reference: plan.id,
+        commitment: `$${plan.hourlyCommitment.toFixed(2)} / 시간`,
+        utilization: plan.utilization,
         end: plan.end,
       })),
     ].sort((left, right) => (left.end ?? "").localeCompare(right.end ?? ""));
@@ -676,30 +925,30 @@ export function CloudBoardDashboard() {
           <span className="brand-mark">C</span>
           <div>
             <strong>CloudBoard</strong>
-            <span>Commitment control</span>
+            <span>RI·SP 비용 관리</span>
           </div>
         </div>
 
         <nav className="primary-nav" aria-label="주요 메뉴">
-          <a className="nav-item active" href="#overview" aria-current="page">
+          <a className="nav-item active" href="#commitments" aria-current="page">
             <span>01</span>
-            Overview
+            활성 약정
+          </a>
+          <a className="nav-item" href="#overview">
+            <span>02</span>
+            비용·효율
           </a>
           <a className="nav-item" href="#services">
-            <span>02</span>
-            Coverage
-          </a>
-          <a className="nav-item" href="#commitments">
             <span>03</span>
-            Expirations
+            서비스별 적용
           </a>
         </nav>
 
         <div className="sidebar-footer">
           <span className="security-dot" />
           <div>
-            <strong>Read-only connection</strong>
-            <span>AWS credentials stay server-side</span>
+            <strong>AWS 읽기 전용 연결</strong>
+            <span>자격 증명은 서버에서만 사용</span>
           </div>
         </div>
       </aside>
@@ -707,17 +956,17 @@ export function CloudBoardDashboard() {
       <main className="main">
         <header className="topbar">
           <div>
-            <p className="eyebrow">AWS COST GOVERNANCE</p>
-            <h1>Commitment Performance</h1>
+            <p className="eyebrow">AWS 비용·약정 관리</p>
+            <h1>RI·Savings Plans 운영 현황</h1>
           </div>
           <div className="topbar-actions">
             <label className="token-field">
-              <span>Access token</span>
+              <span>대시보드 접근 토큰</span>
               <input
                 type="password"
                 value={token}
                 onChange={(event) => handleTokenChange(event.target.value)}
-                placeholder="Optional"
+                placeholder="서버에 설정된 경우 입력"
                 autoComplete="current-password"
               />
             </label>
@@ -834,32 +1083,186 @@ export function CloudBoardDashboard() {
           />
         ) : report && summary ? (
           <>
+            <section
+              className="commitment-portfolio"
+              id="commitments"
+              aria-labelledby="active-commitments-title"
+            >
+              <div className="commitment-portfolio-heading">
+                <div>
+                  <span className="section-index">ACTIVE COMMITMENTS</span>
+                  <h2 id="active-commitments-title">현재 사용 중인 RI·Savings Plans</h2>
+                  <p>
+                    보유 약정별 최근 30일 사용률과 만료일입니다. 사용률이 낮거나
+                    만료가 가까운 약정부터 확인하세요.
+                  </p>
+                </div>
+                <div className="portfolio-counts" aria-label="활성 약정 요약">
+                  <span>
+                    활성 약정 <strong>{summary.commitments.length}</strong>
+                  </span>
+                  <span>
+                    RI 수량 <strong>{summary.activeRi}</strong>
+                  </span>
+                  <span>
+                    SP 계약 <strong>{report.savingsPlans.length}</strong>
+                  </span>
+                </div>
+              </div>
+
+              {summary.commitments.length > 0 ? (
+                <div className="commitment-table" role="table">
+                  <div className="commitment-table-row table-head" role="row">
+                    <span role="columnheader">구분</span>
+                    <span role="columnheader">활성 약정</span>
+                    <span role="columnheader">약정 규모</span>
+                    <span role="columnheader">
+                      <TermWithTooltip
+                        label="최근 30일 사용률"
+                        description="RI는 구매한 예약 시간 중 실제 워크로드에 적용된 비율, SP는 구매한 약정액 중 할인 대상 사용량에 적용된 비율입니다. 할인 적용률(Coverage)과는 다른 지표입니다."
+                      />
+                    </span>
+                    <span role="columnheader">만료일</span>
+                  </div>
+
+                  {summary.commitments.map((commitment) => {
+                    const usageLevel = utilizationLevel(
+                      commitment.utilization,
+                    );
+                    const remainingDays = commitment.end
+                      ? daysUntil(commitment.end)
+                      : null;
+
+                    return (
+                      <div
+                        className="commitment-table-row"
+                        role="row"
+                        key={commitment.id}
+                      >
+                        <span role="cell">
+                          <span
+                            className={`commitment-kind ${commitment.kind.toLowerCase()}`}
+                          >
+                            {commitment.kind}
+                          </span>
+                        </span>
+                        <span className="commitment-identity" role="cell">
+                          <strong>{commitment.title}</strong>
+                          <span>{commitment.detail}</span>
+                          <code title={commitment.reference}>
+                            {shortCommitmentId(commitment.reference)}
+                          </code>
+                        </span>
+                        <span className="commitment-size" role="cell">
+                          {commitment.commitment}
+                        </span>
+                        <span
+                          className={`commitment-utilization ${usageLevel}`}
+                          role="cell"
+                          title={
+                            commitment.utilization.message ??
+                            "최근 완료 30일 기준 약정 사용률"
+                          }
+                        >
+                          <span className="utilization-value">
+                            <strong>
+                              {metricText(
+                                commitment.utilization,
+                                "percentage",
+                              )}
+                            </strong>
+                            <small>
+                              {commitment.utilization.status === "ready"
+                                ? "최근 완료 30일"
+                                : commitment.utilization.message}
+                            </small>
+                          </span>
+                          {commitment.utilization.status === "ready" &&
+                            commitment.utilization.value !== null && (
+                              <span
+                                className="utilization-track"
+                                aria-hidden="true"
+                              >
+                                <span
+                                  style={{
+                                    width: `${commitment.utilization.value}%`,
+                                  }}
+                                />
+                              </span>
+                            )}
+                        </span>
+                        <span className="commitment-expiry" role="cell">
+                          <strong>
+                            {commitment.end
+                              ? formatDate(commitment.end)
+                              : "종료일 없음"}
+                          </strong>
+                          <span
+                            className={`expiry-status ${expiryLevel(
+                              commitment.end,
+                            )}`}
+                          >
+                            {remainingDays === null
+                              ? "확인 필요"
+                              : remainingDays === 0
+                                ? "오늘 만료"
+                                : `D-${remainingDays}`}
+                          </span>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="no-commitments">
+                  <span>RI</span>
+                  <strong>현재 활성화된 RI 또는 Savings Plan이 없습니다</strong>
+                  <p>
+                    안정적으로 유지되는 사용량을 확인한 뒤 신규 약정 구매를
+                    검토하세요.
+                  </p>
+                </div>
+              )}
+            </section>
+
             <section className="metric-guide" id="overview">
               <div>
-                <strong>Coverage</strong>
-                <span>전체 적격 사용량 중 약정 할인이 적용된 비율</span>
+                <strong>할인 적용률(Coverage)</strong>
+                <span>전체 할인 대상 사용량 중 RI 또는 SP가 적용된 비율</span>
               </div>
               <span className="guide-divider" />
               <div>
-                <strong>Utilization</strong>
-                <span>구매한 약정 중 실제 워크로드가 소비한 비율</span>
+                <strong>약정 사용률(Utilization)</strong>
+                <span>구매한 RI 또는 SP 약정 중 실제 사용량에 적용된 비율</span>
               </div>
-              <p>두 지표가 함께 높을수록 약정을 효율적으로 운용하고 있습니다.</p>
+              <p>
+                최근 30개의 완료된 UTC 일자를 기준으로 하며, 두 비율은 서로
+                다른 대상을 측정합니다.
+              </p>
             </section>
 
             <section className="summary-grid">
               <MetricSummaryCard
-                title="RI 성과"
-                eyebrow="30일 커버리지"
+                title="RI 할인 적용률"
+                eyebrow="최근 완료 30일"
+                coverageDescription="RI 적용 시간 ÷ 전체 RI 할인 대상 시간입니다. 실행 자원 수나 보유 RI 수를 단순 비교한 값이 아닙니다."
+                utilizationDescription="구매한 RI 시간 중 실제 사용량에 적용된 시간의 비율입니다. 낮으면 사용하지 못한 RI 비용이 발생할 수 있습니다."
                 metrics={report.metrics.ri}
               />
               <MetricSummaryCard
-                title="Savings Plans 성과"
-                eyebrow="30일 커버리지"
+                title="SP 할인 적용률"
+                eyebrow="최근 완료 30일"
+                coverageDescription="Savings Plans가 적용된 On-Demand 환산 비용 ÷ 전체 SP 할인 대상 비용입니다."
+                utilizationDescription="구매한 Savings Plans 약정액 중 실제 할인 대상 사용량에 적용된 비율입니다. 낮으면 미사용 약정액이 발생합니다."
                 metrics={report.metrics.savingsPlans}
               />
               <article className="summary-card featured savings-summary">
-                <span className="card-label">30일 실현 절감액</span>
+                <div className="card-label">
+                  <TermWithTooltip
+                    label="최근 30일 추정 순절감액"
+                    description="동일 사용량을 On-Demand 요금으로 사용했을 때의 추정 비용에서 RI·SP 약정 비용을 뺀 금액입니다. AWS Cost Explorer의 Net Savings를 사용합니다."
+                  />
+                </div>
                 <div className="coverage-value">
                   {formatCurrency(summary.totalSavings)}
                 </div>
@@ -886,11 +1289,16 @@ export function CloudBoardDashboard() {
                 <p>
                   {summary.savingsIncomplete
                     ? "일부 비용 데이터는 집계 대기 또는 조회 불가 상태입니다."
-                    : "동일 사용량의 On-Demand 비용 대비 순절감액"}
+                    : "동일 사용량의 On-Demand 환산 비용과 비교한 추정 절감액"}
                 </p>
               </article>
               <article className="summary-card expiry-summary">
-                <span className="card-label">다음 약정 만료</span>
+                <div className="card-label">
+                  <TermWithTooltip
+                    label="가장 먼저 만료되는 약정"
+                    description="현재 활성 상태인 RI와 Savings Plans 중 종료일이 가장 가까운 약정입니다. D-0은 오늘 만료를 뜻합니다."
+                  />
+                </div>
                 {summary.nextExpiry?.end ? (
                   <>
                     <strong>D-{daysUntil(summary.nextExpiry.end)}</strong>
@@ -906,17 +1314,83 @@ export function CloudBoardDashboard() {
                   </>
                 )}
                 <div className="active-counts">
-                  <span>RI {summary.activeRi}</span>
-                  <span>SP {report.savingsPlans.length}</span>
+                  <span>활성 RI 수량 {summary.activeRi}</span>
+                  <span>활성 SP 계약 {report.savingsPlans.length}건</span>
                 </div>
               </article>
+            </section>
+
+            <section
+              className="cost-exposure-section"
+              aria-labelledby="cost-exposure-title"
+            >
+              <div className="section-heading-inline">
+                <div>
+                  <span className="section-index">COST IMPACT / 30 DAYS</span>
+                  <h2 id="cost-exposure-title">약정 낭비와 추가 절감 기회</h2>
+                </div>
+                <p>
+                  같은 비용을 중복 합산하지 않고 RI와 SP를 각각 표시합니다.
+                </p>
+              </div>
+              <div className="cost-exposure-grid">
+                <CostExposureCard
+                  label="사용하지 못한 RI 비용"
+                  description="구매한 RI 시간 중 실제 사용량에 적용되지 않은 시간의 약정 비용입니다. Cost Explorer의 RI Cost For Unused Hours 기준입니다."
+                  metric={report.metrics.ri.unusedCommitmentUsd}
+                  tone="waste"
+                />
+                <CostExposureCard
+                  label="사용하지 못한 SP 약정액"
+                  description="구매한 Savings Plans 약정액 중 할인 대상 사용량에 적용되지 않은 금액입니다. Cost Explorer의 Unused Commitment 기준입니다."
+                  metric={report.metrics.savingsPlans.unusedCommitmentUsd}
+                  tone="waste"
+                />
+                <CostExposureCard
+                  label="RI 미적용 On-Demand 비용"
+                  description="RI 할인 대상 사용량 중 RI가 적용되지 않은 시간의 On-Demand 비용입니다. SP 적용 범위와 겹칠 수 있어 SP 미적용 비용과 합산하지 않습니다."
+                  metric={report.metrics.ri.uncoveredOnDemandUsd}
+                  tone="opportunity"
+                />
+                <CostExposureCard
+                  label="SP 미적용 할인 대상 비용"
+                  description="RI 또는 Savings Plans가 적용되지 않아 On-Demand로 청구된 SP 할인 대상 비용입니다."
+                  metric={report.metrics.savingsPlans.uncoveredOnDemandUsd}
+                  tone="opportunity"
+                />
+              </div>
+            </section>
+
+            <section
+              className="trend-section"
+              aria-labelledby="commitment-trend-title"
+            >
+              <div className="section-heading-inline">
+                <div>
+                  <span className="section-index">DAILY TREND / 30 DAYS</span>
+                  <h2 id="commitment-trend-title">일별 할인 적용·약정 사용 추세</h2>
+                </div>
+                <p>평균값에 가려진 최근 악화와 일시적인 변동을 확인합니다.</p>
+              </div>
+              <div className="trend-grid">
+                <TrendChart
+                  title="Reserved Instances"
+                  description="RI 적용 시간과 구매 시간의 일별 변화"
+                  data={report.metrics.ri.daily}
+                />
+                <TrendChart
+                  title="Savings Plans"
+                  description="SP 적용 비용과 시간당 약정 사용의 일별 변화"
+                  data={report.metrics.savingsPlans.daily}
+                />
+              </div>
             </section>
 
             <section className="panel service-panel" id="services">
               <div className="panel-heading">
                 <div>
-                  <span className="section-index">01 / RI COVERAGE</span>
-                  <h2>서비스별 RI 커버리지</h2>
+                  <span className="section-index">01 / RI DISCOUNT COVERAGE</span>
+                  <h2>서비스별 RI 할인 적용률</h2>
                 </div>
                 <span className="updated-at">
                   {report.coverageWindow.start} —{" "}
@@ -927,10 +1401,25 @@ export function CloudBoardDashboard() {
               <div className="service-table" role="table">
                 <div className="service-row table-head" role="row">
                   <span role="columnheader">서비스</span>
-                  <span role="columnheader">실행 / 활성 RI</span>
-                  <span role="columnheader">RI 커버리지</span>
-                  <span role="columnheader">가장 가까운 만료</span>
-                  <span role="columnheader">상태</span>
+                  <span role="columnheader">
+                    <TermWithTooltip
+                      label="실행 자원 / 보유 RI"
+                      description="현재 실행 중인 자원 수와 활성 RI 수량입니다. 인스턴스 크기와 RI 유연성이 달라 두 숫자의 단순 비교로 할인 적용률을 계산할 수 없습니다."
+                    />
+                  </span>
+                  <span role="columnheader">
+                    <TermWithTooltip
+                      label="RI 할인 적용률"
+                      description="최근 완료 30일 동안 전체 RI 할인 대상 시간 중 RI가 적용된 시간의 비율입니다."
+                    />
+                  </span>
+                  <span role="columnheader">다음 RI 만료</span>
+                  <span role="columnheader">
+                    <TermWithTooltip
+                      label="적용률 구간"
+                      description="RI 할인 적용률을 80% 이상, 50~79%, 50% 미만으로 구분합니다. 실행 자원이 없거나 값을 조회하지 못하면 평가 불가로 표시합니다."
+                    />
+                  </span>
                 </div>
                 {report.services.map((service) => {
                   const nextServiceExpiry = report.reservations
@@ -955,7 +1444,7 @@ export function CloudBoardDashboard() {
                           <span>
                             <strong>{service.name}</strong>
                             <small>
-                              {service.breakdown.length}개 구성 그룹
+                              리전·패밀리 조합 {service.breakdown.length}개
                             </small>
                           </span>
                         </span>
@@ -990,7 +1479,8 @@ export function CloudBoardDashboard() {
                                 <span>{item.region}</span>
                                 <strong>{item.family}</strong>
                                 <small>
-                                  실행 {item.running} · 활성 RI {item.reserved}
+                                  실행 자원 {item.running}개 · 활성 RI 수량{" "}
+                                  {item.reserved}
                                 </small>
                               </div>
                             ))}
@@ -1014,9 +1504,9 @@ export function CloudBoardDashboard() {
               <div className="panel-heading">
                 <div>
                   <span className="section-index">
-                    02 / SAVINGS PLANS COVERAGE
+                    02 / SAVINGS PLANS DISCOUNT COVERAGE
                   </span>
-                  <h2>서비스별 Savings Plans 커버리지</h2>
+                  <h2>서비스별 Savings Plans 할인 적용률</h2>
                 </div>
                 <span className="updated-at">
                   {report.coverageWindow.start} —{" "}
@@ -1028,10 +1518,30 @@ export function CloudBoardDashboard() {
                 <div className="sp-coverage-table" role="table">
                   <div className="sp-coverage-row table-head" role="row">
                     <span role="columnheader">AWS 서비스</span>
-                    <span role="columnheader">SP 적용 비용</span>
-                    <span role="columnheader">미적용 On-Demand 비용</span>
-                    <span role="columnheader">전체 적격 비용</span>
-                    <span role="columnheader">SP 커버리지</span>
+                    <span role="columnheader">
+                      <TermWithTooltip
+                        label="SP 적용 비용"
+                        description="Savings Plans 할인이 적용된 사용량의 On-Demand 환산 비용입니다. 실제 청구된 SP 약정 비용과는 다릅니다."
+                      />
+                    </span>
+                    <span role="columnheader">
+                      <TermWithTooltip
+                        label="SP 미적용 할인 대상 비용"
+                        description="Savings Plans 적용 대상이지만 약정이 적용되지 않아 On-Demand로 청구된 비용입니다."
+                      />
+                    </span>
+                    <span role="columnheader">
+                      <TermWithTooltip
+                        label="SP 적용 대상 전체 비용"
+                        description="SP 적용 비용과 SP 미적용 할인 대상 비용을 합한 On-Demand 환산 비용입니다."
+                      />
+                    </span>
+                    <span role="columnheader">
+                      <TermWithTooltip
+                        label="SP 할인 적용률"
+                        description="SP 적용 비용 ÷ SP 적용 대상 전체 비용입니다."
+                      />
+                    </span>
                   </div>
                   {report.savingsPlansCoverage.services.map((service) => (
                     <div className="sp-coverage-row" role="row" key={service.service}>
@@ -1062,93 +1572,56 @@ export function CloudBoardDashboard() {
                   </strong>
                   <span>
                     {report.savingsPlansCoverage.message ??
-                      "서비스별 Savings Plans 커버리지 데이터가 없습니다."}
+                      "서비스별 Savings Plans 할인 적용 데이터를 조회할 수 없습니다."}
                   </span>
                 </div>
               )}
             </section>
 
-            <section className="lower-grid" id="commitments">
-              <article className="panel findings-panel">
-                <div className="panel-heading">
-                  <div>
-                    <span className="section-index">03 / FINDINGS</span>
-                    <h2>우선 확인 항목</h2>
-                  </div>
-                  <span className="count-pill">{report.findings.length}</span>
+            <section
+              className="panel findings-panel action-items-section"
+              id="actions"
+            >
+              <div className="panel-heading">
+                <div>
+                  <span className="section-index">ACTION ITEMS</span>
+                  <h2>조치가 필요한 항목</h2>
                 </div>
-                <div className="findings-list">
-                  {report.findings.slice(0, 8).map((finding) => (
-                    <div className="finding" key={finding.id}>
-                      <span className={`finding-mark ${finding.severity}`} />
-                      <div>
-                        <div className="finding-title">
-                          <strong>{finding.title}</strong>
-                          <span>{finding.service}</span>
-                        </div>
-                        <p>{finding.detail}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </article>
-
-              <article className="panel commitments-panel">
-                <div className="panel-heading">
-                  <div>
-                    <span className="section-index">04 / EXPIRATIONS</span>
-                    <h2>활성 약정 만료 일정</h2>
-                  </div>
-                  <span className="count-pill">
-                    {summary.commitments.length}
-                  </span>
-                </div>
-                {summary.commitments.length > 0 ? (
-                  <div className="commitment-list">
-                    {summary.commitments.map((commitment) => (
-                      <div className="commitment" key={commitment.id}>
-                        <span
-                          className={`commitment-kind ${commitment.kind.toLowerCase()}`}
-                        >
-                          {commitment.kind}
-                        </span>
-                        <div>
-                          <strong>{commitment.title}</strong>
-                          <span>
-                            {commitment.detail}
-                            {commitment.quantity > 1
-                              ? ` · ${commitment.quantity}개`
-                              : ""}
-                          </span>
-                        </div>
-                        <div>
-                          {commitment.amount !== null && (
-                            <strong>${commitment.amount.toFixed(2)}/h</strong>
+                <span className="count-pill">{report.findings.length}</span>
+              </div>
+              <div className="findings-list">
+                {report.findings.slice(0, 8).map((finding) => (
+                  <div className="finding" key={finding.id}>
+                    <span className={`finding-mark ${finding.severity}`} />
+                    <div>
+                      <div className="finding-title">
+                        <strong>{finding.title}</strong>
+                        <span className="finding-meta">
+                          {finding.impactUsd !== null && (
+                            <strong>
+                              30일 영향 {formatCurrency(finding.impactUsd)}
+                            </strong>
                           )}
-                          <span>
-                            {commitment.end
-                              ? `${formatDate(commitment.end)} · D-${daysUntil(
-                                  commitment.end,
-                                )}`
-                              : "만료일 없음"}
-                          </span>
-                        </div>
+                          <span>{finding.service}</span>
+                        </span>
                       </div>
-                    ))}
+                      <p>{finding.detail}</p>
+                      {finding.action && (
+                        <p className="finding-action">
+                          <strong>권장 조치</strong>
+                          {finding.action}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                ) : (
-                  <div className="no-commitments">
-                    <span>RI</span>
-                    <strong>활성 약정이 없습니다</strong>
-                    <p>커버리지 목표와 워크로드 안정성을 먼저 검토하세요.</p>
-                  </div>
-                )}
-              </article>
+                ))}
+              </div>
             </section>
 
             <p className="data-footnote">
-              마지막 조회 {formatDateTime(report.generatedAt)} · 절감액은 AWS Cost
-              Explorer의 Net Savings 기준 · 모든 금액은 USD
+              마지막 AWS 조회 {formatDateTime(report.generatedAt)} · 조회 기간은
+              오늘을 제외한 최근 완료 30일(UTC) · 절감액은 Cost Explorer의 Net
+              Savings 기준 · 모든 금액은 USD
             </p>
           </>
         ) : null}

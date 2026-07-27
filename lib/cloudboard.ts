@@ -47,10 +47,19 @@ export interface MetricValue {
   message: string | null;
 }
 
+export interface CommitmentDailyMetric {
+  date: string;
+  coveragePercentage: number | null;
+  utilizationPercentage: number | null;
+}
+
 export interface CommitmentMetricSet {
   coverage: MetricValue;
   utilization: MetricValue;
   netSavingsUsd: MetricValue;
+  unusedCommitmentUsd: MetricValue;
+  uncoveredOnDemandUsd: MetricValue;
+  daily: CommitmentDailyMetric[];
 }
 
 export interface CommitmentMetrics {
@@ -93,16 +102,19 @@ export interface ReservationSummary {
   quantity: number;
   start: string | null;
   end: string | null;
+  utilization: MetricValue;
 }
 
 export interface SavingsPlanSummary {
   id: string;
+  arn: string | null;
   kind: "savings-plan";
   type: string;
   region: string | null;
   hourlyCommitment: number;
   start: string | null;
   end: string | null;
+  utilization: MetricValue;
 }
 
 export interface Finding {
@@ -111,6 +123,8 @@ export interface Finding {
   title: string;
   detail: string;
   service: string;
+  impactUsd: number | null;
+  action: string | null;
 }
 
 export interface EnvironmentReport {

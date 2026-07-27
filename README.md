@@ -41,6 +41,7 @@ Cost Explorer 조회 기간은 오늘을 제외한 최근 30개의 완료된 UTC
         "ce:GetReservationUtilization",
         "ce:GetSavingsPlansCoverage",
         "ce:GetSavingsPlansUtilization",
+        "ce:GetSavingsPlansUtilizationDetails",
         "savingsplans:DescribeSavingsPlans",
         "ec2:DescribeInstances",
         "ec2:DescribeReservedInstances",
