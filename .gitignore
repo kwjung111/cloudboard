@@ -52,3 +52,12 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+crash.log
+crash.*.log

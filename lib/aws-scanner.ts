@@ -4,6 +4,7 @@ import {
   GetReservationUtilizationCommand,
   GetSavingsPlansCoverageCommand,
   GetSavingsPlansUtilizationCommand,
+  GetSavingsPlansUtilizationDetailsCommand,
 } from "@aws-sdk/client-cost-explorer";
 import {
   DescribeInstancesCommand,
@@ -95,7 +96,7 @@ const services: ServiceDefinition[] = [
   {
     key: "opensearch",
     name: "Amazon OpenSearch",
-    reservationServiceName: null,
+    reservationServiceName: "Amazon Elasticsearch Service",
   },
   {
     key: "redshift",
@@ -207,6 +208,14 @@ function metricValue(value: number | null): MetricValue {
         message: "집계할 사용 데이터가 없습니다.",
       }
     : { value, status: "ready", message: null };
+}
+
+function pendingCommitmentUtilization(): MetricValue {
+  return {
+    value: null,
+    status: "pending",
+    message: "최근 30일 약정별 사용률을 집계하고 있습니다.",
+  };
 }
 
 function emptyMetricSet(message: string): CommitmentMetricSet {
@@ -332,6 +341,7 @@ async function scanEc2(
       quantity: reservation.InstanceCount ?? 0,
       start: toIsoString(reservation.Start),
       end: toIsoString(reservation.End),
+      utilization: pendingCommitmentUtilization(),
     });
   }
   return resultFromBreakdown(breakdown, reservationSummaries);
@@ -390,6 +400,7 @@ async function scanRds(
           quantity: reservation.DBInstanceCount ?? 0,
           start: toIsoString(reservation.StartTime),
           end: endFromDuration(reservation.StartTime, reservation.Duration),
+          utilization: pendingCommitmentUtilization(),
         });
       }
     }
@@ -452,6 +463,7 @@ async function scanElastiCache(
           quantity: reservation.CacheNodeCount ?? 0,
           start: toIsoString(reservation.StartTime),
           end: endFromDuration(reservation.StartTime, reservation.Duration),
+          utilization: pendingCommitmentUtilization(),
         });
       }
     }
@@ -513,6 +525,7 @@ async function scanRedshift(
           quantity: reservation.NodeCount ?? 0,
           start: toIsoString(reservation.StartTime),
           end: endFromDuration(reservation.StartTime, reservation.Duration),
+          utilization: pendingCommitmentUtilization(),
         });
       }
     }
@@ -587,6 +600,7 @@ async function scanOpenSearch(
           quantity: reservation.InstanceCount ?? 0,
           start: toIsoString(reservation.StartTime),
           end: endFromDuration(reservation.StartTime, reservation.Duration),
+          utilization: pendingCommitmentUtilization(),
         });
       }
     }
@@ -630,6 +644,73 @@ async function reservationCoverage(
       response.CoveragesByTime?.[0]?.Total?.CoverageHours
         ?.CoverageHoursPercentage,
   );
+}
+
+async function reservationUtilizationById(
+  client: CostExplorerClient,
+  serviceName: string,
+  window: { start: string; end: string },
+) {
+  const utilizationById = new Map<string, number | null>();
+  let nextPageToken: string | undefined;
+
+  do {
+    const response = await client.send(
+      new GetReservationUtilizationCommand({
+        TimePeriod: { Start: window.start, End: window.end },
+        GroupBy: [{ Type: "DIMENSION", Key: "SUBSCRIPTION_ID" }],
+        Filter: {
+          Dimensions: { Key: "SERVICE", Values: [serviceName] },
+        },
+        NextPageToken: nextPageToken,
+      }),
+    );
+
+    for (const period of response.UtilizationsByTime ?? []) {
+      for (const group of period.Groups ?? []) {
+        const utilization = toPercentage(
+          group.Utilization?.UtilizationPercentage,
+        );
+        const identifiers = [
+          group.Key,
+          group.Value,
+          ...Object.values(group.Attributes ?? {}),
+        ].filter((value): value is string => Boolean(value));
+
+        for (const identifier of identifiers) {
+          utilizationById.set(identifier, utilization);
+        }
+      }
+    }
+    nextPageToken = response.NextPageToken;
+  } while (nextPageToken);
+
+  return utilizationById;
+}
+
+function reservationUtilizationMetric(
+  reservationId: string,
+  utilizationById: Map<string, number | null>,
+) {
+  const direct = utilizationById.get(reservationId);
+  if (direct !== undefined) {
+    return metricValue(direct);
+  }
+
+  const matched = [...utilizationById.entries()].find(
+    ([identifier]) =>
+      identifier.endsWith(`/${reservationId}`) ||
+      identifier.endsWith(`:${reservationId}`) ||
+      identifier.includes(reservationId),
+  );
+
+  return matched
+    ? metricValue(matched[1])
+    : {
+        value: null,
+        status: "unavailable" as const,
+        message: "최근 30일에 이 RI의 사용 데이터가 없습니다.",
+      };
 }
 
 async function savingsPlansCoverage(
@@ -850,6 +931,39 @@ async function reservationMetrics(
   };
 }
 
+async function savingsPlansUtilizationByArn(
+  client: CostExplorerClient,
+  window: { start: string; end: string },
+) {
+  const utilizationByArn = new Map<string, MetricValue>();
+  let nextToken: string | undefined;
+
+  do {
+    const response = await client.send(
+      new GetSavingsPlansUtilizationDetailsCommand({
+        TimePeriod: { Start: window.start, End: window.end },
+        MaxResults: 100,
+        NextToken: nextToken,
+      }),
+    );
+
+    for (const detail of response.SavingsPlansUtilizationDetails ?? []) {
+      if (!detail.SavingsPlanArn) {
+        continue;
+      }
+      utilizationByArn.set(
+        detail.SavingsPlanArn,
+        metricValue(
+          toPercentage(detail.Utilization?.UtilizationPercentage),
+        ),
+      );
+    }
+    nextToken = response.NextToken;
+  } while (nextToken);
+
+  return utilizationByArn;
+}
+
 async function savingsPlansMetrics(
   client: CostExplorerClient,
   window: { start: string; end: string },
@@ -955,12 +1069,14 @@ async function listSavingsPlans(config: AwsEnvironmentConfig) {
     for (const plan of response.savingsPlans ?? []) {
       plans.push({
         id: plan.savingsPlanId ?? "unknown",
+        arn: plan.savingsPlanArn ?? null,
         kind: "savings-plan",
         type: plan.savingsPlanType ?? "unknown",
         region: plan.region ?? null,
         hourlyCommitment: asNumber(plan.commitment),
         start: plan.start ?? null,
         end: plan.end ?? null,
+        utilization: pendingCommitmentUtilization(),
       });
     }
     nextToken = response.nextToken;
@@ -1240,18 +1356,43 @@ export async function scanEnvironment(
   });
   const [
     plansResult,
+    savingsPlansUtilizationResult,
     riMetricsResult,
     savingsPlansMetricsResult,
     savingsPlansCoverageResult,
   ] =
     await Promise.allSettled([
       listSavingsPlans(config),
+      savingsPlansUtilizationByArn(costClient, window),
       reservationMetrics(costClient, window),
       savingsPlansMetrics(costClient, window),
       savingsPlansCoverageByService(costClient, window),
     ]);
   const savingsPlans =
-    plansResult.status === "fulfilled" ? plansResult.value : [];
+    plansResult.status === "fulfilled"
+      ? plansResult.value.map((plan) => {
+          if (savingsPlansUtilizationResult.status === "rejected") {
+            return {
+              ...plan,
+              utilization: metricFailure(
+                savingsPlansUtilizationResult.reason,
+              ),
+            };
+          }
+
+          const utilization = plan.arn
+            ? savingsPlansUtilizationResult.value.get(plan.arn)
+            : null;
+          return {
+            ...plan,
+            utilization: utilization ?? {
+              value: null,
+              status: "unavailable",
+              message: "최근 30일에 이 Savings Plan의 사용 데이터가 없습니다.",
+            },
+          };
+        })
+      : [];
   const metrics: CommitmentMetrics = {
     ri:
       riMetricsResult.status === "fulfilled"
@@ -1287,16 +1428,51 @@ export async function scanEnvironment(
         }
       }
 
+      let reservations = inventories.flatMap(
+        (inventory) => inventory.reservations,
+      );
       let riCoverage: number | null = null;
       if (service.reservationServiceName) {
-        try {
-          riCoverage = await reservationCoverage(
+        const [coverageResult, utilizationResult] = await Promise.allSettled([
+          reservationCoverage(
             costClient,
             service.reservationServiceName,
             window,
+          ),
+          reservations.length > 0
+            ? reservationUtilizationById(
+                costClient,
+                service.reservationServiceName,
+                window,
+              )
+            : Promise.resolve(new Map<string, number | null>()),
+        ]);
+
+        if (coverageResult.status === "fulfilled") {
+          riCoverage = coverageResult.value;
+        } else {
+          errors.push(
+            `RI 할인 적용률: ${errorMessage(coverageResult.reason)}`,
           );
-        } catch (error) {
-          errors.push(`RI 할인 적용률: ${errorMessage(error)}`);
+        }
+
+        if (utilizationResult.status === "fulfilled") {
+          reservations = reservations.map((reservation) => ({
+            ...reservation,
+            utilization: reservationUtilizationMetric(
+              reservation.id,
+              utilizationResult.value,
+            ),
+          }));
+        } else {
+          const failure = metricFailure(utilizationResult.reason);
+          reservations = reservations.map((reservation) => ({
+            ...reservation,
+            utilization: { ...failure },
+          }));
+          errors.push(
+            `RI 약정별 사용률: ${errorMessage(utilizationResult.reason)}`,
+          );
         }
       }
 
@@ -1327,9 +1503,7 @@ export async function scanEnvironment(
             ),
           errors: [...new Set(errors)],
         } satisfies ServiceCoverage,
-        reservations: inventories.flatMap(
-          (inventory) => inventory.reservations,
-        ),
+        reservations,
       };
     }),
   );
@@ -1342,6 +1516,7 @@ export async function scanEnvironment(
     (service) => service.errors.length > 0,
   ) ||
     plansResult.status === "rejected" ||
+    savingsPlansUtilizationResult.status === "rejected" ||
     savingsPlansCoverage.status === "error" ||
     [metrics.ri, metrics.savingsPlans].some((metricSet) =>
       [metricSet.coverage, metricSet.utilization, metricSet.netSavingsUsd].some(

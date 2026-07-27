@@ -1,0 +1,6 @@
+aws_region = "ap-northeast-2"
+
+iam_user_names = [
+  "dev-readonly",
+  "prd-readonly",
+]

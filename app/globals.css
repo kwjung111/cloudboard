@@ -394,6 +394,223 @@ summary {
   background: var(--line);
 }
 
+.commitment-portfolio {
+  margin-top: 24px;
+}
+
+.commitment-portfolio-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 32px;
+  margin-bottom: 12px;
+}
+
+.commitment-portfolio-heading h2 {
+  margin: 3px 0 0;
+  font-size: 24px;
+  letter-spacing: -0.05em;
+}
+
+.commitment-portfolio-heading p {
+  max-width: 640px;
+  margin: 7px 0 0;
+  color: var(--ink-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.portfolio-counts {
+  display: flex;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.portfolio-counts span {
+  min-width: 92px;
+  display: grid;
+  gap: 3px;
+  padding: 10px 13px;
+  border-right: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-size: 8px;
+}
+
+.portfolio-counts span:last-child {
+  border-right: 0;
+}
+
+.portfolio-counts strong {
+  color: var(--ink);
+  font-family: var(--font-geist-mono);
+  font-size: 14px;
+}
+
+.commitment-table {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.commitment-table-row {
+  display: grid;
+  grid-template-columns:
+    72px minmax(230px, 1.5fr) minmax(120px, 0.65fr)
+    minmax(210px, 1fr) minmax(155px, 0.7fr);
+  align-items: center;
+  min-height: 82px;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.commitment-table-row:last-child {
+  border-bottom: 0;
+}
+
+.commitment-table-row.table-head {
+  min-height: 38px;
+  color: var(--ink-muted);
+  background: #f0f2ed;
+  font-family: var(--font-geist-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.commitment-identity {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.commitment-identity strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commitment-identity span {
+  color: var(--ink-muted);
+  font-size: 9px;
+}
+
+.commitment-identity code {
+  overflow: hidden;
+  color: #7b8580;
+  font-family: var(--font-geist-mono);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commitment-size {
+  font-family: var(--font-geist-mono);
+  font-size: 10px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.commitment-utilization {
+  display: grid;
+  gap: 7px;
+  padding-right: 30px;
+}
+
+.utilization-value {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.utilization-value strong {
+  font-family: var(--font-geist-mono);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.utilization-value small {
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commitment-utilization.good .utilization-value strong {
+  color: var(--green);
+}
+
+.commitment-utilization.attention .utilization-value strong {
+  color: #8e5c13;
+}
+
+.commitment-utilization.risk .utilization-value strong {
+  color: var(--red);
+}
+
+.utilization-track {
+  height: 4px;
+  overflow: hidden;
+  background: #e2e5df;
+}
+
+.utilization-track > span {
+  display: block;
+  height: 100%;
+  background: var(--green);
+}
+
+.commitment-utilization.attention .utilization-track > span {
+  background: var(--amber);
+}
+
+.commitment-utilization.risk .utilization-track > span {
+  background: var(--red);
+}
+
+.commitment-expiry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.commitment-expiry > strong {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.expiry-status {
+  min-width: 54px;
+  padding: 5px 7px;
+  border-radius: 3px;
+  color: var(--green);
+  background: var(--green-soft);
+  font-family: var(--font-geist-mono);
+  font-size: 8px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.expiry-status.soon {
+  color: #8e5c13;
+  background: #f3e7ca;
+}
+
+.expiry-status.urgent {
+  color: #9b3932;
+  background: #f4deda;
+}
+
+.expiry-status.unknown {
+  color: var(--ink-muted);
+  background: #e8ebe7;
+}
+
 .metric-guide {
   display: flex;
   align-items: center;
@@ -1172,6 +1389,10 @@ summary {
   margin-top: 18px;
 }
 
+.action-items-section {
+  margin-top: 18px;
+}
+
 .count-pill {
   min-width: 28px;
   padding: 4px 8px;
@@ -1774,6 +1995,12 @@ summary {
     width: 100%;
     margin-left: 0;
   }
+
+  .commitment-portfolio-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
+  }
 }
 
 @media (max-width: 760px) {
@@ -1893,6 +2120,23 @@ summary {
   .metric-guide .guide-divider {
     width: 100%;
     height: 1px;
+  }
+
+  .portfolio-counts {
+    width: 100%;
+  }
+
+  .portfolio-counts span {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .commitment-table {
+    overflow-x: auto;
+  }
+
+  .commitment-table-row {
+    width: 870px;
   }
 
   .summary-card,

@@ -94,6 +94,39 @@ function daysUntil(value: string) {
   );
 }
 
+function shortCommitmentId(value: string) {
+  return value.length > 22
+    ? `${value.slice(0, 10)}…${value.slice(-8)}`
+    : value;
+}
+
+function utilizationLevel(metric: MetricValue) {
+  if (metric.status !== "ready" || metric.value === null) {
+    return "unknown";
+  }
+  if (metric.value >= 80) {
+    return "good";
+  }
+  if (metric.value >= 60) {
+    return "attention";
+  }
+  return "risk";
+}
+
+function expiryLevel(end: string | null) {
+  if (!end) {
+    return "unknown";
+  }
+  const remaining = daysUntil(end);
+  if (remaining <= 30) {
+    return "urgent";
+  }
+  if (remaining <= 90) {
+    return "soon";
+  }
+  return "normal";
+}
+
 function metricText(metric: MetricValue, type: "percentage" | "currency") {
   if (metric.status !== "ready") {
     return metricStatusLabels[metric.status];
@@ -813,8 +846,9 @@ export function CloudBoardDashboard() {
         kind: "RI",
         title: reservation.service,
         detail: `${reservation.family} · ${reservation.region}`,
-        quantity: reservation.quantity,
-        amount: null,
+        reference: reservation.id,
+        commitment: `${reservation.quantity}개 RI`,
+        utilization: reservation.utilization,
         end: reservation.end,
       })),
       ...report.savingsPlans.map((plan) => ({
@@ -822,8 +856,9 @@ export function CloudBoardDashboard() {
         kind: "SP",
         title: `${plan.type} Savings Plan`,
         detail: plan.region ?? "Global",
-        quantity: 1,
-        amount: plan.hourlyCommitment,
+        reference: plan.id,
+        commitment: `$${plan.hourlyCommitment.toFixed(2)} / 시간`,
+        utilization: plan.utilization,
         end: plan.end,
       })),
     ].sort((left, right) => (left.end ?? "").localeCompare(right.end ?? ""));
@@ -895,17 +930,17 @@ export function CloudBoardDashboard() {
         </div>
 
         <nav className="primary-nav" aria-label="주요 메뉴">
-          <a className="nav-item active" href="#overview" aria-current="page">
+          <a className="nav-item active" href="#commitments" aria-current="page">
             <span>01</span>
-            전체 요약
+            활성 약정
+          </a>
+          <a className="nav-item" href="#overview">
+            <span>02</span>
+            비용·효율
           </a>
           <a className="nav-item" href="#services">
-            <span>02</span>
-            할인 적용 현황
-          </a>
-          <a className="nav-item" href="#commitments">
             <span>03</span>
-            약정 만료
+            서비스별 적용
           </a>
         </nav>
 
@@ -1048,6 +1083,148 @@ export function CloudBoardDashboard() {
           />
         ) : report && summary ? (
           <>
+            <section
+              className="commitment-portfolio"
+              id="commitments"
+              aria-labelledby="active-commitments-title"
+            >
+              <div className="commitment-portfolio-heading">
+                <div>
+                  <span className="section-index">ACTIVE COMMITMENTS</span>
+                  <h2 id="active-commitments-title">현재 사용 중인 RI·Savings Plans</h2>
+                  <p>
+                    보유 약정별 최근 30일 사용률과 만료일입니다. 사용률이 낮거나
+                    만료가 가까운 약정부터 확인하세요.
+                  </p>
+                </div>
+                <div className="portfolio-counts" aria-label="활성 약정 요약">
+                  <span>
+                    활성 약정 <strong>{summary.commitments.length}</strong>
+                  </span>
+                  <span>
+                    RI 수량 <strong>{summary.activeRi}</strong>
+                  </span>
+                  <span>
+                    SP 계약 <strong>{report.savingsPlans.length}</strong>
+                  </span>
+                </div>
+              </div>
+
+              {summary.commitments.length > 0 ? (
+                <div className="commitment-table" role="table">
+                  <div className="commitment-table-row table-head" role="row">
+                    <span role="columnheader">구분</span>
+                    <span role="columnheader">활성 약정</span>
+                    <span role="columnheader">약정 규모</span>
+                    <span role="columnheader">
+                      <TermWithTooltip
+                        label="최근 30일 사용률"
+                        description="RI는 구매한 예약 시간 중 실제 워크로드에 적용된 비율, SP는 구매한 약정액 중 할인 대상 사용량에 적용된 비율입니다. 할인 적용률(Coverage)과는 다른 지표입니다."
+                      />
+                    </span>
+                    <span role="columnheader">만료일</span>
+                  </div>
+
+                  {summary.commitments.map((commitment) => {
+                    const usageLevel = utilizationLevel(
+                      commitment.utilization,
+                    );
+                    const remainingDays = commitment.end
+                      ? daysUntil(commitment.end)
+                      : null;
+
+                    return (
+                      <div
+                        className="commitment-table-row"
+                        role="row"
+                        key={commitment.id}
+                      >
+                        <span role="cell">
+                          <span
+                            className={`commitment-kind ${commitment.kind.toLowerCase()}`}
+                          >
+                            {commitment.kind}
+                          </span>
+                        </span>
+                        <span className="commitment-identity" role="cell">
+                          <strong>{commitment.title}</strong>
+                          <span>{commitment.detail}</span>
+                          <code title={commitment.reference}>
+                            {shortCommitmentId(commitment.reference)}
+                          </code>
+                        </span>
+                        <span className="commitment-size" role="cell">
+                          {commitment.commitment}
+                        </span>
+                        <span
+                          className={`commitment-utilization ${usageLevel}`}
+                          role="cell"
+                          title={
+                            commitment.utilization.message ??
+                            "최근 완료 30일 기준 약정 사용률"
+                          }
+                        >
+                          <span className="utilization-value">
+                            <strong>
+                              {metricText(
+                                commitment.utilization,
+                                "percentage",
+                              )}
+                            </strong>
+                            <small>
+                              {commitment.utilization.status === "ready"
+                                ? "최근 완료 30일"
+                                : commitment.utilization.message}
+                            </small>
+                          </span>
+                          {commitment.utilization.status === "ready" &&
+                            commitment.utilization.value !== null && (
+                              <span
+                                className="utilization-track"
+                                aria-hidden="true"
+                              >
+                                <span
+                                  style={{
+                                    width: `${commitment.utilization.value}%`,
+                                  }}
+                                />
+                              </span>
+                            )}
+                        </span>
+                        <span className="commitment-expiry" role="cell">
+                          <strong>
+                            {commitment.end
+                              ? formatDate(commitment.end)
+                              : "종료일 없음"}
+                          </strong>
+                          <span
+                            className={`expiry-status ${expiryLevel(
+                              commitment.end,
+                            )}`}
+                          >
+                            {remainingDays === null
+                              ? "확인 필요"
+                              : remainingDays === 0
+                                ? "오늘 만료"
+                                : `D-${remainingDays}`}
+                          </span>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="no-commitments">
+                  <span>RI</span>
+                  <strong>현재 활성화된 RI 또는 Savings Plan이 없습니다</strong>
+                  <p>
+                    안정적으로 유지되는 사용량을 확인한 뒤 신규 약정 구매를
+                    검토하세요.
+                  </p>
+                </div>
+              )}
+            </section>
+
             <section className="metric-guide" id="overview">
               <div>
                 <strong>할인 적용률(Coverage)</strong>
@@ -1401,102 +1578,44 @@ export function CloudBoardDashboard() {
               )}
             </section>
 
-            <section className="lower-grid" id="commitments">
-              <article className="panel findings-panel">
-                <div className="panel-heading">
-                  <div>
-                    <span className="section-index">03 / ACTION ITEMS</span>
-                    <h2>조치가 필요한 항목</h2>
-                  </div>
-                  <span className="count-pill">{report.findings.length}</span>
+            <section
+              className="panel findings-panel action-items-section"
+              id="actions"
+            >
+              <div className="panel-heading">
+                <div>
+                  <span className="section-index">ACTION ITEMS</span>
+                  <h2>조치가 필요한 항목</h2>
                 </div>
-                <div className="findings-list">
-                  {report.findings.slice(0, 8).map((finding) => (
-                    <div className="finding" key={finding.id}>
-                      <span className={`finding-mark ${finding.severity}`} />
-                        <div>
-                          <div className="finding-title">
-                            <strong>{finding.title}</strong>
-                            <span className="finding-meta">
-                              {finding.impactUsd !== null && (
-                                <strong>
-                                  30일 영향 {formatCurrency(finding.impactUsd)}
-                                </strong>
-                              )}
-                              <span>{finding.service}</span>
-                            </span>
-                          </div>
-                          <p>{finding.detail}</p>
-                          {finding.action && (
-                            <p className="finding-action">
-                              <strong>권장 조치</strong>
-                              {finding.action}
-                            </p>
-                          )}
-                        </div>
-                    </div>
-                  ))}
-                </div>
-              </article>
-
-              <article className="panel commitments-panel">
-                <div className="panel-heading">
-                  <div>
-                    <span className="section-index">
-                      04 / COMMITMENT EXPIRATIONS
-                    </span>
-                    <h2>활성 RI·SP 만료 일정</h2>
-                  </div>
-                  <span className="count-pill">
-                    {summary.commitments.length}
-                  </span>
-                </div>
-                {summary.commitments.length > 0 ? (
-                  <div className="commitment-list">
-                    {summary.commitments.map((commitment) => (
-                      <div className="commitment" key={commitment.id}>
-                        <span
-                          className={`commitment-kind ${commitment.kind.toLowerCase()}`}
-                        >
-                          {commitment.kind}
-                        </span>
-                        <div>
-                          <strong>{commitment.title}</strong>
-                          <span>
-                            {commitment.detail}
-                            {commitment.quantity > 1
-                              ? ` · ${commitment.quantity}개`
-                              : ""}
-                          </span>
-                        </div>
-                        <div>
-                          {commitment.amount !== null && (
+                <span className="count-pill">{report.findings.length}</span>
+              </div>
+              <div className="findings-list">
+                {report.findings.slice(0, 8).map((finding) => (
+                  <div className="finding" key={finding.id}>
+                    <span className={`finding-mark ${finding.severity}`} />
+                    <div>
+                      <div className="finding-title">
+                        <strong>{finding.title}</strong>
+                        <span className="finding-meta">
+                          {finding.impactUsd !== null && (
                             <strong>
-                              시간당 약정 ${commitment.amount.toFixed(2)}
+                              30일 영향 {formatCurrency(finding.impactUsd)}
                             </strong>
                           )}
-                          <span>
-                            {commitment.end
-                              ? `${formatDate(commitment.end)} · D-${daysUntil(
-                                  commitment.end,
-                                )}`
-                              : "만료일 없음"}
-                          </span>
-                        </div>
+                          <span>{finding.service}</span>
+                        </span>
                       </div>
-                    ))}
+                      <p>{finding.detail}</p>
+                      {finding.action && (
+                        <p className="finding-action">
+                          <strong>권장 조치</strong>
+                          {finding.action}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                ) : (
-                  <div className="no-commitments">
-                    <span>RI</span>
-                    <strong>활성 약정이 없습니다</strong>
-                    <p>
-                      할인 적용률 목표와 향후에도 유지될 안정적인 사용량을 확인한
-                      뒤 신규 약정 구매를 검토하세요.
-                    </p>
-                  </div>
-                )}
-              </article>
+                ))}
+              </div>
             </section>
 
             <p className="data-footnote">

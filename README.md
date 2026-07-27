@@ -41,6 +41,7 @@ Cost Explorer 조회 기간은 오늘을 제외한 최근 30개의 완료된 UTC
         "ce:GetReservationUtilization",
         "ce:GetSavingsPlansCoverage",
         "ce:GetSavingsPlansUtilization",
+        "ce:GetSavingsPlansUtilizationDetails",
         "savingsplans:DescribeSavingsPlans",
         "ec2:DescribeInstances",
         "ec2:DescribeReservedInstances",
@@ -63,6 +64,10 @@ Cost Explorer 조회 기간은 오늘을 제외한 최근 30개의 완료된 UTC
 조직의 관리 계정과 멤버 계정은 Cost Explorer에서 보이는 범위가 다를 수 있습니다.
 조직 전체 지표가 필요하면 관리 계정 또는 비용 데이터 조회가 위임된 계정을
 사용하세요.
+
+동일 권한을 Terraform으로 생성하고 기존 IAM 사용자에 연결하려면
+[`terraform/README.md`](terraform/README.md)를 참고하세요. 실제 IAM 사용자
+이름은 `terraform.tfvars`로 전달하며, `terraform apply`는 운영자가 실행합니다.
 
 ## Docker 실행
 
