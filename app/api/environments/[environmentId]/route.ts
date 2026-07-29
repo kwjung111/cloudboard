@@ -1,4 +1,3 @@
-import { authorizeRequest } from "../../../../lib/api-auth";
 import {
   deleteEnvironment,
   EnvironmentNotFoundError,
@@ -10,14 +9,9 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function DELETE(
-  request: Request,
+  _request: Request,
   context: { params: Promise<{ environmentId: string }> },
 ) {
-  const unauthorized = authorizeRequest(request);
-  if (unauthorized) {
-    return unauthorized;
-  }
-
   const { environmentId } = await context.params;
   try {
     deleteEnvironment(environmentId);

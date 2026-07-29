@@ -1,4 +1,3 @@
-import { authorizeRequest } from "../../../lib/api-auth";
 import {
   getEnvironmentSummaries,
   getEnvironmentSummary,
@@ -16,12 +15,7 @@ import type {
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
-  const unauthorized = authorizeRequest(request);
-  if (unauthorized) {
-    return unauthorized;
-  }
-
+export async function GET() {
   try {
     const body: EnvironmentsResponse = {
       environments: getEnvironmentSummaries(),
@@ -43,11 +37,6 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const unauthorized = authorizeRequest(request);
-  if (unauthorized) {
-    return unauthorized;
-  }
-
   try {
     const input = (await request.json()) as unknown;
     const created = createEnvironment(input);

@@ -1,4 +1,3 @@
-import { authorizeRequest } from "../../../../lib/api-auth";
 import {
   getEnvironmentConfig,
   getEnvironmentSummary,
@@ -27,11 +26,6 @@ function invalidEnvironment(): Response {
 }
 
 export async function GET(request: Request) {
-  const unauthorized = authorizeRequest(request);
-  if (unauthorized) {
-    return unauthorized;
-  }
-
   const environmentId = new URL(request.url).searchParams.get("environment");
   if (!environmentId || !getEnvironmentSummary(environmentId)) {
     return invalidEnvironment();
@@ -46,11 +40,6 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const unauthorized = authorizeRequest(request);
-  if (unauthorized) {
-    return unauthorized;
-  }
-
   const environmentId = new URL(request.url).searchParams.get("environment");
   if (environmentId && !getEnvironmentSummary(environmentId)) {
     return invalidEnvironment();

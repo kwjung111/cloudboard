@@ -1,4 +1,3 @@
-import { authorizeRequest } from "../../../lib/api-auth";
 import {
   getEnvironmentConfig,
   getEnvironmentSummary,
@@ -97,11 +96,6 @@ function configurationError(): Response {
 }
 
 export async function GET(request: Request) {
-  const unauthorized = authorizeRequest(request);
-  if (unauthorized) {
-    return unauthorized;
-  }
-
   const url = new URL(request.url);
   const environmentId = url.searchParams.get("environment");
   if (!environmentId) {
