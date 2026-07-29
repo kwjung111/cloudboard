@@ -5,7 +5,11 @@ import { join } from "node:path";
 import test from "node:test";
 import type { Response } from "openai/resources/responses/responses";
 import type { AwsEnvironmentConfig } from "../lib/aws-config";
-import type { AiAuditEvidence, AiAuditReport } from "../lib/cloudboard";
+import type {
+  AiAuditEvidence,
+  AiAuditReport,
+  CostAnomalyReport,
+} from "../lib/cloudboard";
 import {
   normalizeAuditResult,
   runAiAudit,
@@ -33,6 +37,7 @@ writeFileSync(
 
 const environmentStore = await import("../lib/environment-store");
 const auditStore = await import("../lib/ai-audit-store");
+const costStore = await import("../lib/cost-report-store");
 const auditRoute = await import("../app/api/reports/ai-audit/route");
 
 test.after(() => {
@@ -46,6 +51,12 @@ function report(generatedAt: string, headline: string): AiAuditReport {
     generatedAt,
     status: "ready",
     model: "gpt-5.6-sol",
+    costBasis: {
+      expectedBasisDate: "2026-07-27",
+      basisDate: "2026-07-27",
+      dataStatus: "ready",
+      freshnessDays: 2,
+    },
     cost: {
       status: "normal",
       headline,
@@ -83,6 +94,37 @@ function report(generatedAt: string, headline: string): AiAuditReport {
   };
 }
 
+function costReport(
+  basisDate: string,
+  expectedBasisDate: string,
+  generatedAt: string,
+): CostAnomalyReport {
+  return {
+    environmentId: "dev",
+    environmentName: "Development",
+    generatedAt,
+    expectedBasisDate,
+    basisDate,
+    dataStatus: basisDate === expectedBasisDate ? "ready" : "delayed",
+    freshnessDays: basisDate === expectedBasisDate ? 2 : 3,
+    costIsEstimated: true,
+    metric: "NetAmortizedCost",
+    status: "normal",
+    totalCostUsd: 100,
+    weekdayMedianUsd: 100,
+    weekdayChangeUsd: 0,
+    weekdayChangePercentage: 0,
+    previousBasisDate: null,
+    previousBasisCostUsd: null,
+    previousBasisChangeUsd: null,
+    previousBasisChangePercentage: null,
+    baselineDates: [],
+    thresholds: { relativePercentage: 20, absoluteUsd: 100 },
+    topDrivers: [],
+    message: "정상",
+  };
+}
+
 test("stores and retrieves the latest AI audit report", () => {
   auditStore.saveAiAuditReport(report("2026-07-27T21:00:00.000Z", "첫 요약"));
   auditStore.saveAiAuditReport(report("2026-07-28T21:00:00.000Z", "최신 요약"));
@@ -91,6 +133,91 @@ test("stores and retrieves the latest AI audit report", () => {
   assert.ok(latest);
   assert.equal(latest.cost.headline, "최신 요약");
   assert.equal(latest.generatedAt, "2026-07-28T21:00:00.000Z");
+});
+
+test("returns the most recently generated cost report after the T-2 policy change", () => {
+  costStore.saveCostAnomalyReport(
+    costReport("2026-07-28", "2026-07-28", "2026-07-29T06:00:00.000Z"),
+  );
+  costStore.saveCostAnomalyReport(
+    costReport("2026-07-27", "2026-07-27", "2026-07-29T07:00:00.000Z"),
+  );
+
+  const latest = costStore.latestCostAnomalyReport("dev");
+  assert.equal(latest?.basisDate, "2026-07-27");
+  assert.equal(latest?.generatedAt, "2026-07-29T07:00:00.000Z");
+});
+
+test("normalizes a legacy T-2 cost report to the current API contract", () => {
+  const legacy = {
+    ...costReport("2026-07-25", "2026-07-25", "2026-07-29T08:00:00.000Z"),
+    previousFinalizedDate: "2026-07-24",
+    previousFinalizedCostUsd: 90,
+    previousDayChangeUsd: 10,
+    previousDayChangePercentage: 11.11,
+  } as unknown as Record<string, unknown>;
+  delete legacy.expectedBasisDate;
+  delete legacy.dataStatus;
+  delete legacy.previousBasisDate;
+  delete legacy.previousBasisCostUsd;
+  delete legacy.previousBasisChangeUsd;
+  delete legacy.previousBasisChangePercentage;
+  costStore.saveCostAnomalyReport(legacy as unknown as CostAnomalyReport);
+
+  const latest = costStore.latestCostAnomalyReport(
+    "dev",
+    new Date("2026-07-29T06:00:00.000Z"),
+  );
+  assert.equal(latest?.expectedBasisDate, "2026-07-27");
+  assert.equal(latest?.dataStatus, "delayed");
+  assert.equal(latest?.freshnessDays, 4);
+  assert.equal(latest?.previousBasisDate, "2026-07-24");
+  assert.equal(latest?.previousBasisCostUsd, 90);
+  assert.equal(latest?.previousBasisChangeUsd, 10);
+  assert.equal(latest?.previousBasisChangePercentage, 11.11);
+  assert.equal("previousFinalizedDate" in (latest ?? {}), false);
+});
+
+test("does not reuse an AI report after the KST T-2 basis rolls over", () => {
+  const recent = report("2026-07-29T14:59:00.000Z", "자정 직전 요약");
+
+  assert.equal(
+    auditRoute.aiAuditReportIsReusable(
+      recent,
+      new Date("2026-07-29T14:59:30.000Z"),
+      300_000,
+    ),
+    true,
+  );
+  assert.equal(
+    auditRoute.aiAuditReportIsReusable(
+      recent,
+      new Date("2026-07-29T15:01:00.000Z"),
+      300_000,
+    ),
+    false,
+  );
+  assert.equal(
+    auditRoute.aiAuditReportMatchesCurrentBasis(
+      recent,
+      new Date("2026-07-29T15:01:00.000Z"),
+    ),
+    false,
+  );
+});
+
+test("uses separate in-flight run keys after the KST T-2 basis rolls over", () => {
+  const beforeMidnight = new Date("2026-07-29T14:59:00.000Z");
+  const afterMidnight = new Date("2026-07-29T15:01:00.000Z");
+
+  assert.equal(
+    auditRoute.aiAuditRunKey("dev", beforeMidnight),
+    "dev:2026-07-27",
+  );
+  assert.equal(
+    auditRoute.aiAuditRunKey("dev", afterMidnight),
+    "dev:2026-07-28",
+  );
 });
 
 test("removes invented evidence from the two summaries", () => {
@@ -255,6 +382,7 @@ test("runs the required evidence tools before accepting an AI summary", async ()
     },
   };
 
+  const auditNow = new Date("2026-07-29T06:00:00.000Z");
   const generated = await runAiAudit(config, {
     createResponse: async () => {
       const response = responses.shift();
@@ -263,6 +391,15 @@ test("runs the required evidence tools before accepting an AI summary", async ()
     },
     executeTool: async (context, name) => {
       executed.push(name);
+      assert.equal(context.now.toISOString(), auditNow.toISOString());
+      if (name === "get_cost_analysis") {
+        context.costBasis = {
+          expectedBasisDate: "2026-07-27",
+          basisDate: "2026-07-27",
+          dataStatus: "ready",
+          freshnessDays: 2,
+        };
+      }
       const evidenceByTool: Record<string, AiAuditEvidence> = {
         get_environment_overview: {
           id: "inventory-1",
@@ -301,12 +438,19 @@ test("runs the required evidence tools before accepting an AI summary", async ()
       if (evidence) context.evidence.set(evidence.id, evidence);
       return { ok: true, evidenceId: evidence?.id };
     },
-  });
+  }, auditNow);
 
   assert.deepEqual(executed, toolNames);
   assert.equal(generated.cost.status, "normal");
   assert.equal(generated.resourceChanges.status, "normal");
   assert.equal(generated.toolCalls, 4);
+  assert.deepEqual(generated.costBasis, {
+    expectedBasisDate: "2026-07-27",
+    basisDate: "2026-07-27",
+    dataStatus: "ready",
+    freshnessDays: 2,
+  });
+  assert.equal(generated.generatedAt, auditNow.toISOString());
 });
 
 test("returns the latest stored summary without generating a new one", async () => {

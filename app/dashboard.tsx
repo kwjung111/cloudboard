@@ -474,6 +474,13 @@ export function CloudBoardDashboard() {
             <div className="report-meta">
               <span>{report.environmentName}</span>
               <span>{formatDateTime(report.generatedAt)} 기준</span>
+              {report.costBasis?.basisDate && (
+                <span className={report.costBasis.dataStatus === "delayed" ? "partial" : undefined}>
+                  비용 기준 {report.costBasis.basisDate} · {report.costBasis.dataStatus === "delayed"
+                    ? `집계 지연 (예상 ${report.costBasis.expectedBasisDate})`
+                    : "KST T-2 안정화 기준"}
+                </span>
+              )}
               {report.status === "partial" && <span className="partial">일부 데이터 조회 제한</span>}
             </div>
             <section className="summary-grid" aria-label="AI AWS 요약">

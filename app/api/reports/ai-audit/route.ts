@@ -12,6 +12,7 @@ import {
   latestAiAuditReport,
   saveAiAuditReport,
 } from "../../../../lib/ai-audit-store";
+import { costBasisDate } from "../../../../lib/cost-anomaly";
 import type {
   AiAuditReport,
   AiAuditResponse,
@@ -26,6 +27,28 @@ export const maxDuration = 300;
 
 const activeRuns = new Map<string, Promise<AiAuditReport>>();
 
+export function aiAuditRunKey(environmentId: string, now: Date) {
+  return `${environmentId}:${costBasisDate(now)}`;
+}
+
+export function aiAuditReportIsReusable(
+  report: AiAuditReport,
+  now: Date,
+  intervalMs: number,
+) {
+  return Boolean(
+    aiAuditReportMatchesCurrentBasis(report, now) &&
+      now.getTime() - Date.parse(report.generatedAt) < intervalMs,
+  );
+}
+
+export function aiAuditReportMatchesCurrentBasis(
+  report: AiAuditReport,
+  now: Date,
+) {
+  return report.costBasis?.expectedBasisDate === costBasisDate(now);
+}
+
 function minimumRunIntervalMs() {
   const seconds = Number(
     process.env.CLOUDBOARD_AI_AUDIT_MIN_INTERVAL_SECONDS?.trim() || "300",
@@ -36,27 +59,25 @@ function minimumRunIntervalMs() {
   return bounded * 1_000;
 }
 
-async function generateReport(config: AwsEnvironmentConfig) {
+async function generateReport(config: AwsEnvironmentConfig, now: Date) {
   const recent = latestAiAuditReport(config.id);
-  if (
-    recent &&
-    Date.now() - Date.parse(recent.generatedAt) < minimumRunIntervalMs()
-  ) {
+  if (recent && aiAuditReportIsReusable(recent, now, minimumRunIntervalMs())) {
     return recent;
   }
 
-  const active = activeRuns.get(config.id);
+  const runKey = aiAuditRunKey(config.id, now);
+  const active = activeRuns.get(runKey);
   if (active) return active;
 
-  const run = runAiAudit(config).then((report) => {
+  const run = runAiAudit(config, {}, now).then((report) => {
     saveAiAuditReport(report);
     return report;
   });
-  activeRuns.set(config.id, run);
+  activeRuns.set(runKey, run);
   try {
     return await run;
   } finally {
-    if (activeRuns.get(config.id) === run) activeRuns.delete(config.id);
+    if (activeRuns.get(runKey) === run) activeRuns.delete(runKey);
   }
 }
 
@@ -74,8 +95,11 @@ export async function GET(request: Request) {
     return invalidEnvironment();
   }
 
+  const now = new Date();
+  const latest = latestAiAuditReport(environmentId);
   const body: AiAuditResponse = {
-    report: latestAiAuditReport(environmentId),
+    report:
+      latest && aiAuditReportMatchesCurrentBasis(latest, now) ? latest : null,
     configured: aiAuditConfigured(),
   };
   return Response.json(body, {
@@ -105,6 +129,7 @@ export async function POST(request: Request) {
     : getEnvironmentSummaries();
   const reports: AiAuditRunResponse["reports"] = [];
   const errors: AiAuditRunResponse["errors"] = [];
+  const requestedAt = new Date();
 
   await Promise.all(environments.map(async (environment) => {
     const config = getEnvironmentConfig(environment.id);
@@ -117,7 +142,7 @@ export async function POST(request: Request) {
     }
 
     try {
-      const report = await generateReport(config);
+      const report = await generateReport(config, requestedAt);
       reports.push(report);
     } catch (error) {
       console.error(

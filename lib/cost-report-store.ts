@@ -1,4 +1,5 @@
 import type { CostAnomalyReport } from "./cloudboard";
+import { costBasisDate, costFreshnessDays } from "./cost-anomaly";
 import { getCloudboardDatabase } from "./environment-store";
 
 interface CostReportRow {
@@ -32,15 +33,49 @@ export function saveCostAnomalyReport(report: CostAnomalyReport) {
 
 export function latestCostAnomalyReport(
   environmentId: string,
+  now = new Date(),
 ): CostAnomalyReport | null {
+  const expectedBasisDate = costBasisDate(now);
   const row = database()
     .prepare(`
       SELECT report_json
       FROM cost_anomaly_reports
-      WHERE environment_id = ?
-      ORDER BY basis_date DESC
+      WHERE environment_id = ? AND basis_date <= ?
+      ORDER BY generated_at DESC
       LIMIT 1
     `)
-    .get(environmentId) as CostReportRow | undefined;
-  return row ? (JSON.parse(row.report_json) as CostAnomalyReport) : null;
+    .get(environmentId, expectedBasisDate) as CostReportRow | undefined;
+  if (!row) return null;
+
+  const stored = JSON.parse(row.report_json) as CostAnomalyReport & {
+    previousFinalizedDate?: string | null;
+    previousFinalizedCostUsd?: number | null;
+    previousDayChangeUsd?: number | null;
+    previousDayChangePercentage?: number | null;
+  };
+  const {
+    previousFinalizedDate,
+    previousFinalizedCostUsd,
+    previousDayChangeUsd,
+    previousDayChangePercentage,
+    ...current
+  } = stored;
+  return {
+    ...current,
+    expectedBasisDate: stored.expectedBasisDate ?? expectedBasisDate,
+    dataStatus:
+      stored.dataStatus ??
+      (stored.basisDate === expectedBasisDate ? "ready" : "delayed"),
+    freshnessDays: costFreshnessDays(stored.basisDate, now),
+    previousBasisDate:
+      stored.previousBasisDate ?? previousFinalizedDate ?? null,
+    previousBasisCostUsd:
+      stored.previousBasisCostUsd ?? previousFinalizedCostUsd ?? null,
+    previousBasisChangeUsd:
+      stored.previousBasisChangeUsd ?? previousDayChangeUsd ?? null,
+    previousBasisChangePercentage:
+      stored.previousBasisChangePercentage ??
+      previousDayChangePercentage ??
+      null,
+  };
 }
