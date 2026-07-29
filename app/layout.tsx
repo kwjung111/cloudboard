@@ -7,7 +7,7 @@ export const metadata: Metadata = {
     template: "%s · CloudBoard",
   },
   description:
-    "AWS Reserved Instances와 Savings Plans 커버리지를 확인하는 비용 최적화 대시보드",
+    "AI가 AWS 비용 변동과 자원 변경을 짧게 정리하는 대시보드",
 };
 
 export default function RootLayout({

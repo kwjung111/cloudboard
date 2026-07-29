@@ -14,6 +14,8 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudtrail": "^3.1096.0",
+    "@aws-sdk/client-config-service": "^3.1096.0",
     "@aws-sdk/client-cost-explorer": "^3.1093.0",
     "@aws-sdk/client-ec2": "^3.1093.0",
     "@aws-sdk/client-elasticache": "^3.1093.0",
@@ -24,6 +26,7 @@
     "@aws-sdk/client-sts": "^3.1093.0",
     "better-sqlite3": "^12.10.0",
     "next": "^16.2.11",
+    "openai": "^7.0.0",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },

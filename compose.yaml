@@ -16,6 +16,11 @@ services:
       CLOUDBOARD_CREDENTIALS_DIR: /run/cloudboard-credentials
       CLOUDBOARD_DYNAMIC_CREDENTIALS_DIR: /run/cloudboard-dynamic-credentials
       CLOUDBOARD_ACCESS_TOKEN: ${CLOUDBOARD_ACCESS_TOKEN:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CLOUDBOARD_AI_MODEL: ${CLOUDBOARD_AI_MODEL:-gpt-5.6-sol}
+      CLOUDBOARD_AI_AUDIT_MAX_TOOL_CALLS: ${CLOUDBOARD_AI_AUDIT_MAX_TOOL_CALLS:-16}
+      CLOUDBOARD_AI_AUDIT_MIN_INTERVAL_SECONDS: ${CLOUDBOARD_AI_AUDIT_MIN_INTERVAL_SECONDS:-300}
+      CLOUDBOARD_AI_AUDIT_TIMEOUT_MS: ${CLOUDBOARD_AI_AUDIT_TIMEOUT_MS:-210000}
     volumes:
       - cloudboard-data:/app/data
       - ./credentials:/run/cloudboard-dynamic-credentials:ro
@@ -33,7 +38,10 @@ services:
     environment:
       CLOUDBOARD_DAILY_REPORT_URL: http://cloudboard:3000/api/reports/daily-cost
       CLOUDBOARD_DAILY_REPORT_RUN_ON_START: "true"
+      CLOUDBOARD_AI_AUDIT_ENABLED: ${CLOUDBOARD_AI_AUDIT_ENABLED:-false}
+      CLOUDBOARD_AI_AUDIT_URL: http://cloudboard:3000/api/reports/ai-audit
       CLOUDBOARD_ACCESS_TOKEN: ${CLOUDBOARD_ACCESS_TOKEN:-}
+      CLOUDBOARD_REPORT_TIMEOUT_MS: ${CLOUDBOARD_REPORT_TIMEOUT_MS:-330000}
 
 volumes:
   cloudboard-data:
