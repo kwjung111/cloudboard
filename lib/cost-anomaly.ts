@@ -11,6 +11,7 @@ import type {
 } from "./cloudboard";
 
 const dayMs = 86_400_000;
+const koreaOffsetMs = 9 * 60 * 60 * 1_000;
 const metric = "NetAmortizedCost" as const;
 
 export interface CostAnomalyThresholds {
@@ -29,6 +30,24 @@ function amount(value: string | undefined) {
 
 function dateOnly(date: Date) {
   return date.toISOString().slice(0, 10);
+}
+
+function shiftDate(value: string, days: number) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return dateOnly(date);
+}
+
+function koreaDateOnly(date: Date) {
+  return dateOnly(new Date(date.getTime() + koreaOffsetMs));
+}
+
+export function costBasisDate(now = new Date()) {
+  return shiftDate(koreaDateOnly(now), -2);
+}
+
+export function costFreshnessDays(basisDate: string, now = new Date()) {
+  return Math.max(0, daysBetween(koreaDateOnly(now), basisDate));
 }
 
 function daysBetween(later: string, earlier: string) {
@@ -118,9 +137,9 @@ export function analyzeDailyCosts(
   thresholds = costAnomalyThresholds(),
   now = new Date(),
 ): CostAnomalyReport | null {
-  const today = dateOnly(now);
+  const expectedBasisDate = costBasisDate(now);
   const completedDays = points
-    .filter((point) => point.date < today)
+    .filter((point) => point.date <= expectedBasisDate)
     .sort((left, right) => left.date.localeCompare(right.date));
   const current = completedDays.at(-1);
   if (!current) {
@@ -145,7 +164,7 @@ export function analyzeDailyCosts(
     current.costUsd,
     weekdayMedian,
   );
-  const previousDayChange = previous
+  const previousBasisChange = previous
     ? rounded(current.costUsd - previous.costUsd)
     : null;
   const hasEnoughData = baselinePoints.length >= 2;
@@ -171,8 +190,10 @@ export function analyzeDailyCosts(
     environmentId: environment.id,
     environmentName: environment.name,
     generatedAt: now.toISOString(),
+    expectedBasisDate,
     basisDate: current.date,
-    freshnessDays: Math.max(0, daysBetween(today, current.date)),
+    dataStatus: current.date === expectedBasisDate ? "ready" : "delayed",
+    freshnessDays: costFreshnessDays(current.date, now),
     costIsEstimated: current.estimated,
     metric,
     status,
@@ -181,11 +202,11 @@ export function analyzeDailyCosts(
       weekdayMedian === null ? null : rounded(weekdayMedian),
     weekdayChangeUsd: weekdayChange,
     weekdayChangePercentage,
-    previousFinalizedDate: previous?.date ?? null,
-    previousFinalizedCostUsd:
+    previousBasisDate: previous?.date ?? null,
+    previousBasisCostUsd:
       previous === null ? null : rounded(previous.costUsd),
-    previousDayChangeUsd: previousDayChange,
-    previousDayChangePercentage: percentageChange(
+    previousBasisChangeUsd: previousBasisChange,
+    previousBasisChangePercentage: percentageChange(
       current.costUsd,
       previous?.costUsd ?? null,
     ),
@@ -196,12 +217,11 @@ export function analyzeDailyCosts(
   };
 }
 
-function queryWindow(now = new Date()) {
-  const end = new Date(now);
-  end.setUTCHours(0, 0, 0, 0);
-  const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - 42);
-  return { Start: dateOnly(start), End: dateOnly(end) };
+export function costQueryWindow(now = new Date()) {
+  // KST today -> T-2 basis -> T-1 Cost Explorer End (exclusive).
+  const end = shiftDate(costBasisDate(now), 1);
+  const start = shiftDate(end, -42);
+  return { Start: start, End: end };
 }
 
 export async function fetchDailyCosts(
@@ -219,7 +239,7 @@ export async function fetchDailyCosts(
   do {
     const response = await client.send(
       new GetCostAndUsageCommand({
-        TimePeriod: queryWindow(now),
+        TimePeriod: costQueryWindow(now),
         Granularity: "DAILY",
         Metrics: [metric],
         GroupBy: [{ Type: "DIMENSION", Key: "SERVICE" }],

@@ -17,8 +17,15 @@ type JsonObject = Record<string, unknown>;
 
 export interface AiAuditToolContext {
   config: AwsEnvironmentConfig;
+  now: Date;
   evidence: Map<string, AiAuditEvidence>;
   limitations: string[];
+  costBasis: {
+    expectedBasisDate: string | null;
+    basisDate: string | null;
+    dataStatus: "ready" | "delayed" | "unavailable";
+    freshnessDays: number | null;
+  };
 }
 
 export const aiAuditToolDefinitions = [
@@ -39,7 +46,7 @@ export const aiAuditToolDefinitions = [
     type: "function" as const,
     name: "get_cost_analysis",
     description:
-      "Get the latest completed AWS cost date, same-weekday baseline, previous day comparison, and top cost drivers.",
+      "Get the KST T-2 AWS cost basis, same-weekday baseline, previous available day comparison, and top cost drivers.",
     strict: true,
     parameters: {
       type: "object",
@@ -243,18 +250,24 @@ async function environmentOverview(context: AiAuditToolContext) {
 }
 
 async function costAnalysis(context: AiAuditToolContext) {
-  const report = await generateCostAnomalyReport(context.config);
+  const report = await generateCostAnomalyReport(context.config, context.now);
   if (!report) {
     context.limitations.push("완료된 AWS 일별 비용 데이터가 없습니다.");
     return { available: false };
   }
+  context.costBasis = {
+    expectedBasisDate: report.expectedBasisDate,
+    basisDate: report.basisDate,
+    dataStatus: report.dataStatus,
+    freshnessDays: report.freshnessDays,
+  };
   const evidence = addEvidence(context, {
     id: evidenceId("cost", report.basisDate),
     source: "cost-explorer",
     kind: "cost-analysis",
     label: `${report.basisDate} 비용 비교`,
-    detail: `${report.metric} ${report.totalCostUsd} USD, 동일 요일 중앙값 대비 ${report.weekdayChangeUsd ?? "비교 불가"} USD, 판정 ${report.status}.`,
-    observedAt: `${report.basisDate}T23:59:59.000Z`,
+    detail: `${report.metric} ${report.totalCostUsd} USD, KST T-2 기준일 ${report.expectedBasisDate}, 실제 분석일 ${report.basisDate}, 데이터 상태 ${report.dataStatus}, 동일 요일 중앙값 대비 ${report.weekdayChangeUsd ?? "비교 불가"} USD, 판정 ${report.status}.`,
+    observedAt: `${report.basisDate}T23:59:59.000+09:00`,
   });
   return { available: true, evidenceId: evidence.id, ...report };
 }
@@ -599,11 +612,19 @@ async function resourceHistory(context: AiAuditToolContext, args: JsonObject) {
 
 export function createAiAuditToolContext(
   config: AwsEnvironmentConfig,
+  now = new Date(),
 ): AiAuditToolContext {
   return {
     config,
+    now,
     evidence: new Map(),
     limitations: [],
+    costBasis: {
+      expectedBasisDate: null,
+      basisDate: null,
+      dataStatus: "unavailable",
+      freshnessDays: null,
+    },
   };
 }
 

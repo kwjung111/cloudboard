@@ -132,6 +132,8 @@ export type CostAnomalyStatus =
   | "anomaly"
   | "insufficient-data";
 
+export type CostDataStatus = "ready" | "delayed";
+
 export interface DailyServiceCost {
   service: string;
   costUsd: number;
@@ -155,7 +157,9 @@ export interface CostAnomalyReport {
   environmentId: EnvironmentId;
   environmentName: string;
   generatedAt: string;
+  expectedBasisDate: string;
   basisDate: string;
+  dataStatus: CostDataStatus;
   freshnessDays: number;
   costIsEstimated: boolean;
   metric: "NetAmortizedCost";
@@ -164,10 +168,10 @@ export interface CostAnomalyReport {
   weekdayMedianUsd: number | null;
   weekdayChangeUsd: number | null;
   weekdayChangePercentage: number | null;
-  previousFinalizedDate: string | null;
-  previousFinalizedCostUsd: number | null;
-  previousDayChangeUsd: number | null;
-  previousDayChangePercentage: number | null;
+  previousBasisDate: string | null;
+  previousBasisCostUsd: number | null;
+  previousBasisChangeUsd: number | null;
+  previousBasisChangePercentage: number | null;
   baselineDates: string[];
   thresholds: {
     relativePercentage: number;
@@ -221,6 +225,12 @@ export interface AiAuditReport {
   generatedAt: string;
   status: "ready" | "partial" | "failed";
   model: string;
+  costBasis: {
+    expectedBasisDate: string | null;
+    basisDate: string | null;
+    dataStatus: CostDataStatus | "unavailable";
+    freshnessDays: number | null;
+  };
   cost: AiAuditSummary;
   resourceChanges: AiAuditSummary;
   evidence: AiAuditEvidence[];
