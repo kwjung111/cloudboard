@@ -1,4 +1,3 @@
-import { authorizeRequest } from "../../../../lib/api-auth";
 import {
   AiAuditNotConfiguredError,
   aiAuditConfigured,
@@ -26,17 +25,6 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const activeRuns = new Map<string, Promise<AiAuditReport>>();
-
-function requireAiAuditAuthorization(request: Request): Response | null {
-  if (!process.env.CLOUDBOARD_ACCESS_TOKEN?.trim()) {
-    const body: ApiError = {
-      error: "AI 요약 API를 사용하려면 서버에 CLOUDBOARD_ACCESS_TOKEN을 설정해 주세요.",
-      code: "CONFIGURATION_ERROR",
-    };
-    return Response.json(body, { status: 503 });
-  }
-  return authorizeRequest(request);
-}
 
 function minimumRunIntervalMs() {
   const seconds = Number(
@@ -81,11 +69,6 @@ function invalidEnvironment(): Response {
 }
 
 export async function GET(request: Request) {
-  const unauthorized = requireAiAuditAuthorization(request);
-  if (unauthorized) {
-    return unauthorized;
-  }
-
   const environmentId = new URL(request.url).searchParams.get("environment");
   if (!environmentId || !getEnvironmentSummary(environmentId)) {
     return invalidEnvironment();
@@ -101,11 +84,6 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const unauthorized = requireAiAuditAuthorization(request);
-  if (unauthorized) {
-    return unauthorized;
-  }
-
   if (!aiAuditConfigured()) {
     const body: ApiError = {
       error: "AI 요약을 사용하려면 서버에 OPENAI_API_KEY를 설정해 주세요.",

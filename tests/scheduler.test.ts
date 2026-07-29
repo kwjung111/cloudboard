@@ -38,3 +38,16 @@ test("aborts a report endpoint that does not respond", async () => {
     clearTimeout(keepEventLoopAlive);
   }
 });
+
+test("calls report endpoints without an application access token", async () => {
+  let requestInit: RequestInit | undefined;
+  const fetcher = async (_url: string, init?: RequestInit) => {
+    requestInit = init;
+    return new Response(JSON.stringify({ reports: [], errors: [] }));
+  };
+
+  await runReport("ai-audit-report", "http://cloudboard.test", fetcher, 1000);
+
+  assert.equal(requestInit?.method, "POST");
+  assert.equal(requestInit?.headers, undefined);
+});

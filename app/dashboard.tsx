@@ -79,12 +79,10 @@ function SummaryCard({
 
 function EnvironmentManager({
   environments,
-  token,
   onClose,
   onChanged,
 }: {
   environments: EnvironmentSummary[];
-  token: string;
   onClose: () => void;
   onChanged: (preferredId?: string, deletedId?: string) => void;
 }) {
@@ -134,7 +132,6 @@ function EnvironmentManager({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(token ? { "x-cloudboard-token": token } : {}),
         },
         body: JSON.stringify({
           ...form,
@@ -167,7 +164,6 @@ function EnvironmentManager({
     try {
       const response = await fetch(`/api/environments/${environment.id}`, {
         method: "DELETE",
-        headers: token ? { "x-cloudboard-token": token } : {},
       });
       if (!response.ok) {
         const body = (await response.json()) as ApiError;
@@ -300,17 +296,6 @@ export function CloudBoardDashboard() {
   const [loadingReport, setLoadingReport] = useState<EnvironmentId | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [managerOpen, setManagerOpen] = useState(false);
-  const [token, setToken] = useState(() =>
-    typeof window === "undefined"
-      ? ""
-      : (sessionStorage.getItem("cloudboard-access-token") ?? ""),
-  );
-
-  const headers = useCallback(
-    (): Record<string, string> =>
-      token ? { "x-cloudboard-token": token } : {},
-    [token],
-  );
 
   const loadEnvironments = useCallback(
     async (preferredId?: string) => {
@@ -318,7 +303,6 @@ export function CloudBoardDashboard() {
       setError(null);
       try {
         const response = await fetch("/api/environments", {
-          headers: headers(),
           cache: "no-store",
         });
         const body = (await response.json()) as EnvironmentsResponse | ApiError;
@@ -341,7 +325,7 @@ export function CloudBoardDashboard() {
         setLoadingEnvironments(false);
       }
     },
-    [headers],
+    [],
   );
 
   const loadReport = useCallback(
@@ -352,7 +336,6 @@ export function CloudBoardDashboard() {
         const query = new URLSearchParams({ environment: environmentId });
         const response = await fetch(`/api/reports/ai-audit?${query}`, {
           method: generate ? "POST" : "GET",
-          headers: headers(),
           cache: "no-store",
         });
         const body = (await response.json()) as AiAuditResponse | AiAuditRunResponse | ApiError;
@@ -383,7 +366,7 @@ export function CloudBoardDashboard() {
         setLoadingReport(null);
       }
     },
-    [headers],
+    [],
   );
 
   useEffect(() => {
@@ -397,12 +380,6 @@ export function CloudBoardDashboard() {
       return () => window.clearTimeout(timeout);
     }
   }, [environment, loadReport, reports]);
-
-  const changeToken = (value: string) => {
-    setToken(value);
-    if (value) sessionStorage.setItem("cloudboard-access-token", value);
-    else sessionStorage.removeItem("cloudboard-access-token");
-  };
 
   const environmentsChanged = (preferredId?: string, deletedId?: string) => {
     if (deletedId) {
@@ -427,19 +404,6 @@ export function CloudBoardDashboard() {
           <strong>CloudBoard</strong>
         </a>
         <div className="header-actions">
-          <details className="access-settings">
-            <summary>접근 설정</summary>
-            <label>
-              <span>대시보드 접근 토큰</span>
-              <input
-                type="password"
-                value={token}
-                onChange={(event) => changeToken(event.target.value)}
-                placeholder="설정된 경우 입력"
-                autoComplete="current-password"
-              />
-            </label>
-          </details>
           <button className="secondary-button" type="button" onClick={() => setManagerOpen(true)}>
             환경 관리
           </button>
@@ -531,7 +495,6 @@ export function CloudBoardDashboard() {
       {managerOpen && (
         <EnvironmentManager
           environments={environments}
-          token={token}
           onClose={() => setManagerOpen(false)}
           onChanged={environmentsChanged}
         />

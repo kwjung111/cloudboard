@@ -310,11 +310,8 @@ test("runs the required evidence tools before accepting an AI summary", async ()
 });
 
 test("returns the latest stored summary without generating a new one", async () => {
-  process.env.CLOUDBOARD_ACCESS_TOKEN = "test-token";
   const response = await auditRoute.GET(
-    new Request("http://cloudboard.test/api/reports/ai-audit?environment=dev", {
-      headers: { "x-cloudboard-token": "test-token" },
-    }),
+    new Request("http://cloudboard.test/api/reports/ai-audit?environment=dev"),
   );
   const body = (await response.json()) as {
     configured: boolean;
@@ -329,23 +326,10 @@ test("returns the latest stored summary without generating a new one", async () 
 
 test("rejects generation when the OpenAI key is not configured", async () => {
   delete process.env.OPENAI_API_KEY;
-  process.env.CLOUDBOARD_ACCESS_TOKEN = "test-token";
   const response = await auditRoute.POST(
     new Request("http://cloudboard.test/api/reports/ai-audit?environment=dev", {
       method: "POST",
-      headers: { "x-cloudboard-token": "test-token" },
     }),
-  );
-  const body = (await response.json()) as { code: string };
-
-  assert.equal(response.status, 503);
-  assert.equal(body.code, "CONFIGURATION_ERROR");
-});
-
-test("rejects AI audit access when the server token is not configured", async () => {
-  delete process.env.CLOUDBOARD_ACCESS_TOKEN;
-  const response = await auditRoute.GET(
-    new Request("http://cloudboard.test/api/reports/ai-audit?environment=dev"),
   );
   const body = (await response.json()) as { code: string };
 

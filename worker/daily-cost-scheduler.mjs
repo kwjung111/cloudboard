@@ -8,7 +8,6 @@ const aiAuditUrl =
   "http://cloudboard:3000/api/reports/ai-audit";
 const aiAuditEnabled =
   process.env.CLOUDBOARD_AI_AUDIT_ENABLED?.trim() === "true";
-const accessToken = process.env.CLOUDBOARD_ACCESS_TOKEN?.trim();
 const configuredTimeoutMs = Number(
   process.env.CLOUDBOARD_REPORT_TIMEOUT_MS?.trim() || "330000",
 );
@@ -42,9 +41,6 @@ export async function runReport(
   const response = await fetcher(url, {
     method: "POST",
     signal: AbortSignal.timeout(timeoutMs),
-    headers: accessToken
-      ? { "x-cloudboard-token": accessToken }
-      : undefined,
   });
   const body = await response.text();
   if (!response.ok) {

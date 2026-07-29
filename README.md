@@ -55,7 +55,6 @@ CLOUDBOARD_AI_AUDIT_MAX_TOOL_CALLS=16
 CLOUDBOARD_AI_AUDIT_MIN_INTERVAL_SECONDS=300
 CLOUDBOARD_AI_AUDIT_TIMEOUT_MS=210000
 CLOUDBOARD_AI_AUDIT_ENABLED=true
-CLOUDBOARD_ACCESS_TOKEN=<충분히 긴 임의 값>
 ```
 
 `OPENAI_API_KEY`는 서버 또는 Secret Manager에서만 주입합니다. 키가 없으면 화면에
@@ -63,10 +62,8 @@ CLOUDBOARD_ACCESS_TOKEN=<충분히 긴 임의 값>
 `POST /api/reports/ai-audit?environment=dev`, 최신 저장본 조회는
 `GET /api/reports/ai-audit?environment=dev`입니다.
 
-AI 조회·생성 API는 비용 및 자원 변경 근거를 다루고 유료 모델 호출을 실행하므로
-`CLOUDBOARD_ACCESS_TOKEN`이 반드시 필요합니다. 두 요청 모두 같은 값을
-`x-cloudboard-token` 헤더로 전달합니다. 동일 환경의 동시 실행은 한 번으로 합치고,
-기본 5분 동안은 저장된 최신 결과를 재사용합니다.
+AI 조회·생성 API는 사내망에서 별도 애플리케이션 토큰 없이 호출합니다. 동일 환경의
+동시 실행은 한 번으로 합치고, 기본 5분 동안은 저장된 최신 결과를 재사용합니다.
 
 `CLOUDBOARD_AI_AUDIT_ENABLED=true`이면 reporter가 기존 비용 리포트와 함께 매일
 오전 6시(Asia/Seoul)에 AI 감사를 실행합니다. 기본값은 `false`이므로 OpenAI 키와
@@ -203,9 +200,6 @@ Content-Type: application/json
 DELETE /api/environments/b2b-dev
 ```
 
-`CLOUDBOARD_ACCESS_TOKEN`이 설정된 경우 두 요청 모두
-`x-cloudboard-token` 헤더가 필요합니다.
-
 환경 변수로 자격 증명을 주입할 때는 환경 ID에서 만든 prefix를 사용합니다.
 예를 들어 `b2b-dev`는 `AWS_B2B_DEV_ACCESS_KEY_ID`와
 `AWS_B2B_DEV_SECRET_ACCESS_KEY`를 조회합니다.
@@ -221,12 +215,11 @@ AWS_DEV_SESSION_TOKEN=
 OPENAI_API_KEY=
 CLOUDBOARD_AI_MODEL=gpt-5.6-sol
 CLOUDBOARD_AI_AUDIT_ENABLED=true
-CLOUDBOARD_ACCESS_TOKEN=<충분히 긴 임의 값>
 ```
 
 운영 환경에서는 정적 키보다 워크로드 아이덴티티와 AssumeRole을 권장합니다.
-`CLOUDBOARD_ACCESS_TOKEN`을 설정하면 일반 API도 `x-cloudboard-token` 헤더를
-요구합니다. AI 조회·생성 API에서는 이 값이 선택이 아니라 필수입니다.
+CloudBoard 자체 접근 토큰 기능은 제공하지 않습니다. 사내망 밖으로 노출할 경우
+nginx나 사내 SSO에서 대시보드 전체를 인증으로 보호해야 합니다.
 
 ## GitOps 배포
 
