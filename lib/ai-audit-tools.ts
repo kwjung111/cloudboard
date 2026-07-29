@@ -10,8 +10,17 @@ import {
 } from "@aws-sdk/client-config-service";
 import { scanEnvironment } from "./aws-scanner";
 import type { AwsEnvironmentConfig } from "./aws-config";
-import type { AiAuditEvidence } from "./cloudboard";
-import { generateCostAnomalyReport } from "./cost-anomaly";
+import type { AiAuditEvidence, CostAnomalyReport } from "./cloudboard";
+import {
+  costBasisDate,
+  costReportMinimumIntervalMs,
+  generateCostAnomalyReport,
+} from "./cost-anomaly";
+import {
+  getCostDetailSnapshot,
+  latestCostAnomalyReport,
+  saveCostAnomalyReport,
+} from "./cost-report-store";
 
 type JsonObject = Record<string, unknown>;
 
@@ -25,6 +34,14 @@ export interface AiAuditToolContext {
     basisDate: string | null;
     dataStatus: "ready" | "delayed" | "unavailable";
     freshnessDays: number | null;
+  };
+  costChanges: {
+    comparison: "same-weekday-median";
+    comparisonAvailable: boolean;
+    basisDate: string | null;
+    reportGeneratedAt: string | null;
+    baselineDates: string[];
+    totalItems: number;
   };
 }
 
@@ -249,17 +266,85 @@ async function environmentOverview(context: AiAuditToolContext) {
   };
 }
 
+export function costReportIsReusableForAudit(
+  report: CostAnomalyReport,
+  hasSnapshot: boolean,
+  now: Date,
+) {
+  const ageMs = now.getTime() - Date.parse(report.generatedAt);
+  return Boolean(
+    report.expectedBasisDate === costBasisDate(now) &&
+      report.costDetailsVersion === 1 &&
+      hasSnapshot &&
+      (report.dataStatus === "ready" ||
+        (Number.isFinite(ageMs) &&
+          ageMs >= 0 &&
+          ageMs < costReportMinimumIntervalMs())),
+  );
+}
+
 async function costAnalysis(context: AiAuditToolContext) {
-  const report = await generateCostAnomalyReport(context.config, context.now);
+  const stored = latestCostAnomalyReport(context.config.id, context.now);
+  const storedSnapshot = stored
+    ? getCostDetailSnapshot(
+        context.config.id,
+        stored.basisDate,
+        stored.generatedAt,
+      )
+    : null;
+  let report =
+    stored &&
+    costReportIsReusableForAudit(
+      stored,
+      Boolean(storedSnapshot),
+      context.now,
+    )
+      ? stored
+      : await generateCostAnomalyReport(context.config, context.now);
   if (!report) {
     context.limitations.push("완료된 AWS 일별 비용 데이터가 없습니다.");
     return { available: false };
   }
+  let selectedSnapshot = report === stored ? storedSnapshot : null;
+  if (report !== stored) {
+    const updatedLatestReport = saveCostAnomalyReport(report);
+    if (!updatedLatestReport) {
+      const latest = latestCostAnomalyReport(context.config.id, context.now);
+      const latestSnapshot = latest
+        ? getCostDetailSnapshot(
+            context.config.id,
+            latest.basisDate,
+            latest.generatedAt,
+          )
+        : null;
+      if (latest && latestSnapshot) {
+        report = latest;
+        selectedSnapshot = latestSnapshot;
+      }
+    }
+    selectedSnapshot ??= getCostDetailSnapshot(
+      context.config.id,
+      report.basisDate,
+      report.generatedAt,
+    );
+  }
+  const detailSnapshot = selectedSnapshot ?? {
+    comparisonAvailable: report.status !== "insufficient-data",
+    totalItems: report.costIncreases.length,
+  };
   context.costBasis = {
     expectedBasisDate: report.expectedBasisDate,
     basisDate: report.basisDate,
     dataStatus: report.dataStatus,
     freshnessDays: report.freshnessDays,
+  };
+  context.costChanges = {
+    comparison: "same-weekday-median",
+    comparisonAvailable: detailSnapshot.comparisonAvailable,
+    basisDate: report.basisDate,
+    reportGeneratedAt: report.generatedAt,
+    baselineDates: report.baselineDates,
+    totalItems: detailSnapshot.totalItems,
   };
   const evidence = addEvidence(context, {
     id: evidenceId("cost", report.basisDate),
@@ -269,7 +354,14 @@ async function costAnalysis(context: AiAuditToolContext) {
     detail: `${report.metric} ${report.totalCostUsd} USD, KST T-2 기준일 ${report.expectedBasisDate}, 실제 분석일 ${report.basisDate}, 데이터 상태 ${report.dataStatus}, 동일 요일 중앙값 대비 ${report.weekdayChangeUsd ?? "비교 불가"} USD, 판정 ${report.status}.`,
     observedAt: `${report.basisDate}T23:59:59.000+09:00`,
   });
-  return { available: true, evidenceId: evidence.id, ...report };
+  return {
+    available: true,
+    evidenceId: evidence.id,
+    ...report,
+    // The UI keeps the complete deterministic list; the model only needs the
+    // bounded topDrivers list to produce its one-line summary.
+    costIncreases: undefined,
+  };
 }
 
 async function recentWriteEvents(
@@ -624,6 +716,14 @@ export function createAiAuditToolContext(
       basisDate: null,
       dataStatus: "unavailable",
       freshnessDays: null,
+    },
+    costChanges: {
+      comparison: "same-weekday-median",
+      comparisonAvailable: false,
+      basisDate: null,
+      reportGeneratedAt: null,
+      baselineDates: [],
+      totalItems: 0,
     },
   };
 }

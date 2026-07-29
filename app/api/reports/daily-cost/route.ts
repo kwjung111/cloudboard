@@ -3,19 +3,83 @@ import {
   getEnvironmentSummary,
   getEnvironmentSummaries,
 } from "../../../../lib/aws-config";
-import { generateCostAnomalyReport } from "../../../../lib/cost-anomaly";
+import type { AwsEnvironmentConfig } from "../../../../lib/aws-config";
 import {
+  costBasisDate,
+  costReportMinimumIntervalMs,
+  generateCostAnomalyReport,
+} from "../../../../lib/cost-anomaly";
+import {
+  getCostDetailSnapshot,
   latestCostAnomalyReport,
   saveCostAnomalyReport,
 } from "../../../../lib/cost-report-store";
 import type {
   ApiError,
+  CostAnomalyReport,
   CostReportResponse,
   CostReportRunResponse,
+  CostReportSummary,
 } from "../../../../lib/cloudboard";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+const activeRuns = new Map<string, Promise<CostAnomalyReport | null>>();
+
+function detailSnapshot(report: CostAnomalyReport) {
+  return report.costDetailsVersion === 1
+    ? getCostDetailSnapshot(
+        report.environmentId,
+        report.basisDate,
+        report.generatedAt,
+      )
+    : null;
+}
+
+function summarizeReport(report: CostAnomalyReport): CostReportSummary {
+  const snapshot = detailSnapshot(report);
+  const { costIncreases, ...summary } = report;
+  void costIncreases;
+  return {
+    ...summary,
+    costDetailsVersion: snapshot ? report.costDetailsVersion : 0,
+    costIncreaseCount: snapshot?.totalItems ?? 0,
+  };
+}
+
+async function generateReport(
+  config: AwsEnvironmentConfig,
+  now: Date,
+): Promise<CostAnomalyReport | null> {
+  const recent = latestCostAnomalyReport(config.id, now);
+  if (
+    recent?.expectedBasisDate === costBasisDate(now) &&
+    detailSnapshot(recent) &&
+    now.getTime() - Date.parse(recent.generatedAt) <
+      costReportMinimumIntervalMs()
+  ) {
+    return recent;
+  }
+
+  const runKey = `${config.id}:${costBasisDate(now)}`;
+  const active = activeRuns.get(runKey);
+  if (active) return active;
+
+  const run = generateCostAnomalyReport(config, now).then((report) => {
+    if (!report) return null;
+    const updatedLatestReport = saveCostAnomalyReport(report);
+    return updatedLatestReport
+      ? report
+      : latestCostAnomalyReport(config.id, now) ?? report;
+  });
+  activeRuns.set(runKey, run);
+  try {
+    return await run;
+  } finally {
+    if (activeRuns.get(runKey) === run) activeRuns.delete(runKey);
+  }
+}
 
 function invalidEnvironment(): Response {
   const body: ApiError = {
@@ -31,8 +95,9 @@ export async function GET(request: Request) {
     return invalidEnvironment();
   }
 
+  const report = latestCostAnomalyReport(environmentId);
   const body: CostReportResponse = {
-    report: latestCostAnomalyReport(environmentId),
+    report: report ? summarizeReport(report) : null,
   };
   return Response.json(body, {
     headers: { "Cache-Control": "no-store" },
@@ -53,6 +118,7 @@ export async function POST(request: Request) {
     : getEnvironmentSummaries();
   const reports: CostReportRunResponse["reports"] = [];
   const errors: CostReportRunResponse["errors"] = [];
+  const now = new Date();
 
   for (const environment of environments) {
     const config = getEnvironmentConfig(environment.id);
@@ -65,7 +131,7 @@ export async function POST(request: Request) {
     }
 
     try {
-      const report = await generateCostAnomalyReport(config);
+      const report = await generateReport(config, now);
       if (!report) {
         errors.push({
           environmentId: environment.id,
@@ -73,8 +139,7 @@ export async function POST(request: Request) {
         });
         continue;
       }
-      saveCostAnomalyReport(report);
-      reports.push(report);
+      reports.push(summarizeReport(report));
     } catch (error) {
       console.error(
         "Daily cost report generation failed",

@@ -382,6 +382,7 @@ export async function runAiAudit(
       status: limitations.length > 0 ? "partial" : "ready",
       model,
       costBasis: context.costBasis,
+      costChanges: context.costChanges,
       cost: normalized.cost,
       resourceChanges: normalized.resourceChanges,
       evidence: [...context.evidence.values()],

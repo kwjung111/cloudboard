@@ -152,6 +152,39 @@ function migrate(database: DatabaseInstance) {
         ON ai_audit_reports (environment_id, generated_at DESC);
 
       INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);
+
+      CREATE TABLE IF NOT EXISTS cost_detail_snapshots (
+        environment_id TEXT NOT NULL,
+        basis_date TEXT NOT NULL,
+        generated_at TEXT NOT NULL,
+        comparison_available INTEGER NOT NULL,
+        total_items INTEGER NOT NULL,
+        PRIMARY KEY (environment_id, basis_date, generated_at),
+        FOREIGN KEY (environment_id) REFERENCES environments(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS cost_change_details (
+        environment_id TEXT NOT NULL,
+        basis_date TEXT NOT NULL,
+        generated_at TEXT NOT NULL,
+        rank INTEGER NOT NULL,
+        service TEXT NOT NULL,
+        usage_type TEXT,
+        basis_cost_usd REAL NOT NULL,
+        weekday_median_cost_usd REAL NOT NULL,
+        increase_usd REAL NOT NULL,
+        increase_percentage REAL,
+        is_new INTEGER NOT NULL,
+        PRIMARY KEY (environment_id, basis_date, generated_at, rank),
+        FOREIGN KEY (environment_id, basis_date, generated_at)
+          REFERENCES cost_detail_snapshots(environment_id, basis_date, generated_at)
+          ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_cost_change_details_page
+        ON cost_change_details (environment_id, basis_date, generated_at, rank);
+
+      INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);
     `);
   })();
 }

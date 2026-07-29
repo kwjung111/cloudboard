@@ -68,14 +68,16 @@ async function runReports() {
       ? [{ name: "ai-audit-report", url: aiAuditUrl }]
       : []),
   ];
-  const results = await Promise.allSettled(
-    reports.map((report) => runReport(report.name, report.url)),
-  );
-  const failures = results
-    .filter((result) => result.status === "rejected")
-    .map((result) =>
-      result.reason instanceof Error ? result.reason.message : String(result.reason),
-    );
+  const failures = [];
+  // Cost runs first so the AI audit can reuse the same deterministic report
+  // instead of repeating the Cost Explorer detail queries.
+  for (const report of reports) {
+    try {
+      await runReport(report.name, report.url);
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
+  }
   if (failures.length > 0) {
     throw new Error(failures.join(" / "));
   }
