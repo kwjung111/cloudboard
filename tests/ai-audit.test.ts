@@ -38,7 +38,10 @@ writeFileSync(
 const environmentStore = await import("../lib/environment-store");
 const auditStore = await import("../lib/ai-audit-store");
 const costStore = await import("../lib/cost-report-store");
+const aiAuditTools = await import("../lib/ai-audit-tools");
 const auditRoute = await import("../app/api/reports/ai-audit/route");
+const dailyCostRoute = await import("../app/api/reports/daily-cost/route");
+const costDetailsRoute = await import("../app/api/reports/cost-details/route");
 
 test.after(() => {
   environmentStore.closeEnvironmentStore();
@@ -56,6 +59,14 @@ function report(generatedAt: string, headline: string): AiAuditReport {
       basisDate: "2026-07-27",
       dataStatus: "ready",
       freshnessDays: 2,
+    },
+    costChanges: {
+      comparison: "same-weekday-median",
+      comparisonAvailable: true,
+      basisDate: "2026-07-27",
+      reportGeneratedAt: generatedAt,
+      baselineDates: [],
+      totalItems: 0,
     },
     cost: {
       status: "normal",
@@ -109,6 +120,7 @@ function costReport(
     freshnessDays: basisDate === expectedBasisDate ? 2 : 3,
     costIsEstimated: true,
     metric: "NetAmortizedCost",
+    costDetailsVersion: 1,
     status: "normal",
     totalCostUsd: 100,
     weekdayMedianUsd: 100,
@@ -121,6 +133,7 @@ function costReport(
     baselineDates: [],
     thresholds: { relativePercentage: 20, absoluteUsd: 100 },
     topDrivers: [],
+    costIncreases: [],
     message: "정상",
   };
 }
@@ -146,6 +159,70 @@ test("returns the most recently generated cost report after the T-2 policy chang
   const latest = costStore.latestCostAnomalyReport("dev");
   assert.equal(latest?.basisDate, "2026-07-27");
   assert.equal(latest?.generatedAt, "2026-07-29T07:00:00.000Z");
+});
+
+test("does not let an older overlapping cost run overwrite a newer report", () => {
+  const newerSaved = costStore.saveCostAnomalyReport(
+    costReport("2026-07-27", "2026-07-27", "2026-07-29T07:10:00.000Z"),
+  );
+  const olderSaved = costStore.saveCostAnomalyReport(
+    costReport("2026-07-27", "2026-07-27", "2026-07-29T07:05:00.000Z"),
+  );
+
+  const latest = costStore.latestCostAnomalyReport("dev");
+  const olderSnapshot = costStore.getCostDetailSnapshot(
+    "dev",
+    "2026-07-27",
+    "2026-07-29T07:05:00.000Z",
+  );
+  assert.equal(newerSaved, true);
+  assert.equal(olderSaved, false);
+  assert.equal(latest?.generatedAt, "2026-07-29T07:10:00.000Z");
+  assert.ok(olderSnapshot);
+});
+
+test("keeps the first committed snapshot when generated timestamps tie", () => {
+  const generatedAt = "2026-07-29T07:20:00.000Z";
+  const first = costReport("2026-07-27", "2026-07-27", generatedAt);
+  first.costIncreases = [{
+    service: "Amazon EC2",
+    usageType: "BoxUsage:t3.large",
+    basisCostUsd: 20,
+    weekdayMedianCostUsd: 10,
+    increaseUsd: 10,
+    increasePercentage: 100,
+    isNew: false,
+  }];
+  const tied = costReport("2026-07-27", "2026-07-27", generatedAt);
+  tied.costIncreases = [
+    ...first.costIncreases,
+    {
+      service: "Amazon RDS",
+      usageType: "InstanceUsage:db.r6g.large",
+      basisCostUsd: 30,
+      weekdayMedianCostUsd: 10,
+      increaseUsd: 20,
+      increasePercentage: 200,
+      isNew: false,
+    },
+  ];
+
+  assert.equal(costStore.saveCostAnomalyReport(first), true);
+  assert.equal(costStore.saveCostAnomalyReport(tied), false);
+  const snapshot = costStore.getCostDetailSnapshot(
+    "dev",
+    "2026-07-27",
+    generatedAt,
+  );
+  const page = costStore.costIncreaseDetailsPage(
+    "dev",
+    "2026-07-27",
+    generatedAt,
+    0,
+    100,
+  );
+  assert.equal(snapshot?.totalItems, 1);
+  assert.deepEqual(page?.items.map((item) => item.service), ["Amazon EC2"]);
 });
 
 test("normalizes a legacy T-2 cost report to the current API contract", () => {
@@ -217,6 +294,133 @@ test("uses separate in-flight run keys after the KST T-2 basis rolls over", () =
   assert.equal(
     auditRoute.aiAuditRunKey("dev", afterMidnight),
     "dev:2026-07-28",
+  );
+});
+
+test("retries delayed cost data after the short reuse interval", () => {
+  const now = new Date("2026-07-29T08:10:00.000Z");
+  const delayed = costReport(
+    "2026-07-26",
+    "2026-07-27",
+    "2026-07-29T08:00:00.000Z",
+  );
+  assert.equal(
+    aiAuditTools.costReportIsReusableForAudit(delayed, true, now),
+    false,
+  );
+
+  delayed.generatedAt = "2026-07-29T08:08:00.000Z";
+  assert.equal(
+    aiAuditTools.costReportIsReusableForAudit(delayed, true, now),
+    true,
+  );
+
+  delayed.dataStatus = "ready";
+  delayed.generatedAt = "2026-07-29T06:00:00.000Z";
+  assert.equal(
+    aiAuditTools.costReportIsReusableForAudit(delayed, true, now),
+    true,
+  );
+});
+
+test("returns cost increase details in bounded pages", async () => {
+  const detailed = costReport(
+    "2026-07-27",
+    "2026-07-27",
+    "2026-07-29T08:00:00.000Z",
+  );
+  detailed.costIncreases = [
+    {
+      service: "Amazon EC2",
+      usageType: "BoxUsage:t3.large",
+      basisCostUsd: 80,
+      weekdayMedianCostUsd: 50,
+      increaseUsd: 30,
+      increasePercentage: 60,
+      isNew: false,
+    },
+    {
+      service: "Amazon RDS",
+      usageType: "InstanceUsage:db.r6g.large",
+      basisCostUsd: 40,
+      weekdayMedianCostUsd: 0,
+      increaseUsd: 40,
+      increasePercentage: null,
+      isNew: true,
+    },
+  ];
+  costStore.saveCostAnomalyReport(detailed);
+
+  const response = await costDetailsRoute.GET(
+    new Request(
+      "http://cloudboard.test/api/reports/cost-details?environment=dev&basisDate=2026-07-27&reportGeneratedAt=2026-07-29T08%3A00%3A00.000Z&cursor=1&limit=1",
+    ),
+  );
+  const body = (await response.json()) as {
+    reportGeneratedAt: string;
+    total: number;
+    items: Array<{ service: string }>;
+  };
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reportGeneratedAt, "2026-07-29T08:00:00.000Z");
+  assert.equal(body.total, 2);
+  assert.equal(body.items.length, 1);
+  assert.equal(body.items[0].service, "Amazon RDS");
+
+  const defaultPageResponse = await costDetailsRoute.GET(
+    new Request(
+      "http://cloudboard.test/api/reports/cost-details?environment=dev&basisDate=2026-07-27&reportGeneratedAt=2026-07-29T08%3A00%3A00.000Z",
+    ),
+  );
+  const defaultPage = (await defaultPageResponse.json()) as {
+    limit: number;
+    items: Array<{ service: string }>;
+  };
+  assert.equal(defaultPage.limit, 100);
+  assert.equal(defaultPage.items.length, 2);
+});
+
+test("rejects a cost detail page from a different report snapshot", async () => {
+  const response = await costDetailsRoute.GET(
+    new Request(
+      "http://cloudboard.test/api/reports/cost-details?environment=dev&basisDate=2026-07-27&reportGeneratedAt=2026-07-29T09%3A00%3A00.000Z",
+    ),
+  );
+
+  assert.equal(response.status, 409);
+});
+
+test("returns cost report metadata without pretending omitted details are empty", async () => {
+  const response = await dailyCostRoute.GET(
+    new Request("http://cloudboard.test/api/reports/daily-cost?environment=dev"),
+  );
+  const body = (await response.json()) as {
+    report: Record<string, unknown> & { costIncreaseCount: number };
+  };
+
+  assert.equal(response.status, 200);
+  assert.equal(body.report.costIncreaseCount, 2);
+  assert.equal("costIncreases" in body.report, false);
+});
+
+test("keeps a legacy summary visible but does not reuse it for generation", () => {
+  const legacy = report("2026-07-29T05:59:00.000Z", "기존 요약") as
+    Partial<AiAuditReport>;
+  delete legacy.costChanges;
+  const now = new Date("2026-07-29T06:00:00.000Z");
+
+  assert.equal(
+    auditRoute.aiAuditReportMatchesCurrentBasis(legacy as AiAuditReport, now),
+    true,
+  );
+  assert.equal(
+    auditRoute.aiAuditReportIsReusable(
+      legacy as AiAuditReport,
+      now,
+      300_000,
+    ),
+    false,
   );
 });
 
@@ -316,15 +520,17 @@ test("applies all SQLite migrations during store startup", () => {
   const versions = database
     .prepare("SELECT version FROM schema_migrations ORDER BY version")
     .all() as Array<{ version: number }>;
-  assert.deepEqual(versions.map((row) => row.version), [1, 2, 3]);
+  assert.deepEqual(versions.map((row) => row.version), [1, 2, 3, 4]);
   const tables = database
     .prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('cost_anomaly_reports', 'ai_audit_reports') ORDER BY name",
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('cost_anomaly_reports', 'ai_audit_reports', 'cost_detail_snapshots', 'cost_change_details') ORDER BY name",
     )
     .all() as Array<{ name: string }>;
   assert.deepEqual(tables.map((row) => row.name), [
     "ai_audit_reports",
     "cost_anomaly_reports",
+    "cost_change_details",
+    "cost_detail_snapshots",
   ]);
 });
 
@@ -399,6 +605,14 @@ test("runs the required evidence tools before accepting an AI summary", async ()
           dataStatus: "ready",
           freshnessDays: 2,
         };
+        context.costChanges = {
+          comparison: "same-weekday-median",
+          comparisonAvailable: true,
+          basisDate: "2026-07-27",
+          reportGeneratedAt: auditNow.toISOString(),
+          baselineDates: ["2026-07-20", "2026-07-13"],
+          totalItems: 1,
+        };
       }
       const evidenceByTool: Record<string, AiAuditEvidence> = {
         get_environment_overview: {
@@ -450,6 +664,7 @@ test("runs the required evidence tools before accepting an AI summary", async ()
     dataStatus: "ready",
     freshnessDays: 2,
   });
+  assert.equal(generated.costChanges.totalItems, 1);
   assert.equal(generated.generatedAt, auditNow.toISOString());
 });
 

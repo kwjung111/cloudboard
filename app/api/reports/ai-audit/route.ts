@@ -38,6 +38,8 @@ export function aiAuditReportIsReusable(
 ) {
   return Boolean(
     aiAuditReportMatchesCurrentBasis(report, now) &&
+      Number.isInteger(report.costChanges?.totalItems) &&
+      typeof report.costChanges?.reportGeneratedAt === "string" &&
       now.getTime() - Date.parse(report.generatedAt) < intervalMs,
   );
 }

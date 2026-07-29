@@ -13,6 +13,7 @@ import type {
   AiAuditRunResponse,
   AiAuditSummary,
   ApiError,
+  CostDetailPageResponse,
   EnvironmentId,
   EnvironmentInput,
   EnvironmentSummary,
@@ -33,6 +34,16 @@ const statusLabels: Record<AiAuditSummary["status"], string> = {
   critical: "큰 변동",
   unavailable: "확인 불가",
 };
+const costDetailPageSize = 100;
+const usdFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+const percentageFormatter = new Intl.NumberFormat("ko-KR", {
+  maximumFractionDigits: 2,
+});
 
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("ko-KR", {
@@ -44,14 +55,212 @@ function formatDateTime(value: string) {
   }).format(new Date(value));
 }
 
+function formatUsd(value: number) {
+  return usdFormatter.format(value);
+}
+
+function CostChangeDetails({
+  details,
+  environmentId,
+}: {
+  details: AiAuditReport["costChanges"];
+  environmentId: EnvironmentId;
+}) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState<CostDetailPageResponse["items"]>([]);
+  const [total, setTotal] = useState(details.totalItems);
+  const [cursor, setCursor] = useState(0);
+  const [nextCursor, setNextCursor] = useState<number | null>(null);
+  const [pageStarts, setPageStarts] = useState([0]);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [retryTarget, setRetryTarget] = useState<{
+    cursor: number;
+    pageIndex: number;
+  } | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+  const listRef = useRef<HTMLUListElement>(null);
+  const rangeStart = items.length > 0 ? cursor + 1 : 0;
+  const rangeEnd = cursor + items.length;
+
+  const loadPage = useCallback(async (
+    requestedCursor: number,
+    requestedPageIndex: number,
+    moveFocus = false,
+  ) => {
+    if (
+      loading ||
+      !details.basisDate ||
+      !details.reportGeneratedAt
+    ) {
+      return;
+    }
+    setLoading(true);
+    setDetailError(null);
+    setRetryTarget(null);
+    try {
+      const query = new URLSearchParams({
+        environment: environmentId,
+        basisDate: details.basisDate,
+        reportGeneratedAt: details.reportGeneratedAt,
+        cursor: String(requestedCursor),
+        limit: String(costDetailPageSize),
+      });
+      const response = await fetch(`/api/reports/cost-details?${query}`, {
+        cache: "no-store",
+      });
+      const body = (await response.json()) as CostDetailPageResponse | ApiError;
+      if (!response.ok || !("items" in body)) {
+        throw new Error("error" in body ? body.error : "비용 상세를 불러오지 못했습니다.");
+      }
+      if (
+        body.basisDate !== details.basisDate ||
+        body.reportGeneratedAt !== details.reportGeneratedAt
+      ) {
+        throw new Error("비용 상세 보고서가 변경되었습니다. 새로고침해 주세요.");
+      }
+      setItems(body.items);
+      setTotal(body.total);
+      setCursor(body.cursor);
+      setNextCursor(body.nextCursor);
+      setPageIndex(requestedPageIndex);
+      setPageStarts((current) => {
+        const updated = current.slice(0, requestedPageIndex + 1);
+        updated[requestedPageIndex] = body.cursor;
+        if (body.nextCursor !== null) {
+          updated[requestedPageIndex + 1] = body.nextCursor;
+        }
+        return updated;
+      });
+      setLoaded(true);
+      const start = body.items.length > 0 ? body.cursor + 1 : 0;
+      setAnnouncement(
+        `비용 상승 항목 ${start}번부터 ${body.cursor + body.items.length}번까지 불러왔습니다.`,
+      );
+      if (moveFocus) {
+        requestAnimationFrame(() => listRef.current?.focus());
+      }
+    } catch (error) {
+      setRetryTarget({
+        cursor: requestedCursor,
+        pageIndex: requestedPageIndex,
+      });
+      setDetailError(
+        error instanceof Error ? error.message : "비용 상세를 불러오지 못했습니다.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [
+    details.basisDate,
+    details.reportGeneratedAt,
+    environmentId,
+    loading,
+  ]);
+
+  return (
+    <details
+      className="cost-details"
+      onToggle={(event) => {
+        const isOpen = event.currentTarget.open;
+        setOpen(isOpen);
+        if (isOpen && !loaded && total > 0) void loadPage(0, 0);
+      }}
+    >
+      <summary>
+        <span>상세</span>
+        <small>상승 항목 {total}개</small>
+      </summary>
+      {open && (
+        <div className="cost-details-panel">
+          <p>
+            {!details.comparisonAvailable
+              ? "새 비용 상세 데이터가 아직 없습니다. 새 요약을 생성하면 확인할 수 있습니다."
+              : details.basisDate
+                ? `${details.basisDate} 비용을 최근 동일 요일 ${details.baselineDates.length}회 중앙값과 비교했습니다.`
+                : "비용 상승 항목을 계산할 수 있는 기준 데이터가 없습니다."}
+          </p>
+          {detailError && (
+            <p className="cost-detail-error" role="alert">{detailError}</p>
+          )}
+          {details.comparisonAvailable && total > 0 ? (
+            <>
+              <ul
+                ref={listRef}
+                className="cost-change-list"
+                tabIndex={0}
+                aria-label={`비용 상승 항목 ${rangeStart}–${rangeEnd}, 전체 ${total}개`}
+              >
+                {items.map((item) => (
+                  <li key={`${item.service}:${item.usageType ?? ""}`}>
+                    <div>
+                      <strong>{item.service}</strong>
+                      {item.usageType && <span>{item.usageType}</span>}
+                      <small>
+                        기준일 {formatUsd(item.basisCostUsd)} · 비교 기준 {formatUsd(item.weekdayMedianCostUsd)}
+                      </small>
+                    </div>
+                    <div className="cost-increase">
+                      <strong>+{formatUsd(item.increaseUsd)}</strong>
+                      <small>
+                        {item.increasePercentage === null
+                          ? item.isNew
+                            ? "동일 요일 기준 신규"
+                            : "금액 기준 비교"
+                          : `+${percentageFormatter.format(item.increasePercentage)}%`}
+                      </small>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <div className="cost-details-pagination" aria-label="비용 상승 항목 페이지">
+                <button
+                  type="button"
+                  disabled={loading || pageIndex === 0}
+                  onClick={() => void loadPage(pageStarts[pageIndex - 1], pageIndex - 1, true)}
+                >
+                  이전
+                </button>
+                <span>{rangeStart}–{rangeEnd} / {total}</span>
+                <button
+                  type="button"
+                  disabled={loading || (nextCursor === null && !detailError)}
+                  onClick={() => void loadPage(
+                    retryTarget?.cursor ?? nextCursor ?? cursor,
+                    retryTarget?.pageIndex ?? pageIndex + 1,
+                    true,
+                  )}
+                >
+                  {loading ? "불러오는 중" : detailError ? "다시 시도" : "다음"}
+                </button>
+              </div>
+              <p className="sr-only" role="status">{announcement}</p>
+            </>
+          ) : (
+            details.comparisonAvailable && (
+              <p className="no-cost-increase">비교 기준보다 상승한 비용 항목이 없습니다.</p>
+            )
+          )}
+        </div>
+      )}
+    </details>
+  );
+}
+
 function SummaryCard({
   label,
   icon,
   summary,
+  costDetails,
+  environmentId,
 }: {
   label: string;
   icon: string;
   summary: AiAuditSummary;
+  costDetails?: AiAuditReport["costChanges"];
+  environmentId?: EnvironmentId;
 }) {
   return (
     <article className={`summary-card ${summary.status}`}>
@@ -66,7 +275,9 @@ function SummaryCard({
       </header>
       <h2>{summary.headline}</h2>
       <p>{summary.summary}</p>
-      {summary.highlights.length > 0 && (
+      {costDetails && environmentId ? (
+        <CostChangeDetails details={costDetails} environmentId={environmentId} />
+      ) : summary.highlights.length > 0 && (
         <ul>
           {summary.highlights.map((highlight) => (
             <li key={highlight}>{highlight}</li>
@@ -410,7 +621,7 @@ export function CloudBoardDashboard() {
         </div>
       </header>
 
-      <main id="top" aria-live="polite">
+      <main id="top">
         <section className="page-heading">
           <div>
             <span>AWS DAILY BRIEF</span>
@@ -448,7 +659,7 @@ export function CloudBoardDashboard() {
         {error && <div className="error-banner" role="alert">{error}</div>}
 
         {loadingEnvironments ? (
-          <div className="empty-state">환경을 불러오는 중입니다.</div>
+          <div className="empty-state" role="status">환경을 불러오는 중입니다.</div>
         ) : !environment ? (
           <div className="empty-state">
             <strong>AWS 환경이 없습니다</strong>
@@ -465,7 +676,7 @@ export function CloudBoardDashboard() {
             <p>서버에 OPENAI_API_KEY를 설정하면 요약을 생성할 수 있습니다.</p>
           </div>
         ) : reportLoading && !report ? (
-          <div className="empty-state loading-state">
+          <div className="empty-state loading-state" role="status">
             <span />
             <strong>AWS 변경 내용을 확인하고 있습니다</strong>
           </div>
@@ -484,8 +695,27 @@ export function CloudBoardDashboard() {
               {report.status === "partial" && <span className="partial">일부 데이터 조회 제한</span>}
             </div>
             <section className="summary-grid" aria-label="AI AWS 요약">
-              <SummaryCard label="비용 변동" icon="$" summary={report.cost} />
-              <SummaryCard label="자원 변경" icon="↻" summary={report.resourceChanges} />
+              <SummaryCard
+                key={`${report.environmentId}:${report.generatedAt}:cost`}
+                label="비용 변동"
+                icon="$"
+                summary={report.cost}
+                environmentId={report.environmentId}
+                costDetails={report.costChanges ?? {
+                  comparison: "same-weekday-median",
+                  comparisonAvailable: false,
+                  basisDate: report.costBasis?.basisDate ?? null,
+                  reportGeneratedAt: null,
+                  baselineDates: [],
+                  totalItems: 0,
+                }}
+              />
+              <SummaryCard
+                key={`${report.environmentId}:${report.generatedAt}:resources`}
+                label="자원 변경"
+                icon="↻"
+                summary={report.resourceChanges}
+              />
             </section>
           </>
         ) : (

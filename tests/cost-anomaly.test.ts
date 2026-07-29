@@ -17,7 +17,7 @@ function point(
     date,
     costUsd,
     estimated,
-    services: [{ service, costUsd }],
+    services: [{ service, usageType: null, costUsd }],
   };
 }
 
@@ -146,6 +146,7 @@ test("reports insufficient data until at least two same weekdays exist", () => {
   assert.ok(report);
   assert.equal(report.status, "insufficient-data");
   assert.deepEqual(report.baselineDates, ["2026-07-19"]);
+  assert.deepEqual(report.costIncreases, []);
 });
 
 test("ranks services by increase from their weekday median", () => {
@@ -160,8 +161,8 @@ test("ranks services by increase from their weekday median", () => {
     costUsd: 110,
     estimated: false,
     services: [
-      { service: "EC2", costUsd: 80 },
-      { service: "RDS", costUsd: 30 },
+      { service: "EC2", usageType: null, costUsd: 80 },
+      { service: "RDS", usageType: null, costUsd: 30 },
     ],
   }));
   const report = analyzeDailyCosts(
@@ -173,8 +174,8 @@ test("ranks services by increase from their weekday median", () => {
         costUsd: 200,
         estimated: false,
         services: [
-          { service: "EC2", costUsd: 100 },
-          { service: "RDS", costUsd: 100 },
+          { service: "EC2", usageType: null, costUsd: 100 },
+          { service: "RDS", usageType: null, costUsd: 100 },
         ],
       },
     ],
@@ -185,4 +186,166 @@ test("ranks services by increase from their weekday median", () => {
   assert.ok(report);
   assert.equal(report.topDrivers[0].service, "RDS");
   assert.equal(report.topDrivers[0].changeUsd, 70);
+  assert.deepEqual(
+    report.costIncreases.map((item) => ({
+      service: item.service,
+      increaseUsd: item.increaseUsd,
+    })),
+    [
+      { service: "RDS", increaseUsd: 70 },
+      { service: "EC2", increaseUsd: 20 },
+    ],
+  );
+});
+
+test("includes every increased service and treats a missing baseline service as zero", () => {
+  const report = analyzeDailyCosts(
+    { id: "prd", name: "Production" },
+    [
+      {
+        date: "2026-07-05",
+        costUsd: 100,
+        estimated: false,
+        services: [{ service: "EC2", usageType: null, costUsd: 100 }],
+      },
+      {
+        date: "2026-07-12",
+        costUsd: 110,
+        estimated: false,
+        services: [
+          { service: "EC2", usageType: null, costUsd: 100 },
+          { service: "RDS", usageType: null, costUsd: 10 },
+        ],
+      },
+      {
+        date: "2026-07-19",
+        costUsd: 100,
+        estimated: false,
+        services: [{ service: "EC2", usageType: null, costUsd: 100 }],
+      },
+      {
+        date: "2026-07-26",
+        costUsd: 180,
+        estimated: false,
+        services: [
+          { service: "EC2", usageType: null, costUsd: 120 },
+          { service: "RDS", usageType: null, costUsd: 20 },
+          { service: "AWS Lambda", usageType: null, costUsd: 40 },
+        ],
+      },
+    ],
+    { relativePercentage: 20, absoluteUsd: 50 },
+    new Date("2026-07-28T00:00:00.000Z"),
+  );
+
+  assert.ok(report);
+  assert.deepEqual(
+    report.costIncreases.map((item) => ({
+      service: item.service,
+      baseline: item.weekdayMedianCostUsd,
+      increase: item.increaseUsd,
+    })),
+    [
+      { service: "AWS Lambda", baseline: 0, increase: 40 },
+      { service: "EC2", baseline: 100, increase: 20 },
+      { service: "RDS", baseline: 0, increase: 20 },
+    ],
+  );
+  assert.equal(report.costIncreases[0].increasePercentage, null);
+  assert.equal(report.costIncreases[0].isNew, true);
+  assert.equal(
+    report.costIncreases.find((item) => item.service === "RDS")?.isNew,
+    false,
+  );
+});
+
+test("keeps top drivers aggregated by service while details split usage types", () => {
+  const baselineDates = ["2026-07-12", "2026-07-19"];
+  const report = analyzeDailyCosts(
+    { id: "prd", name: "Production" },
+    [
+      ...baselineDates.map((date) => ({
+        date,
+        costUsd: 100,
+        estimated: false,
+        services: [
+          { service: "EC2", usageType: "BoxUsage:t3.large", costUsd: 70 },
+          { service: "EC2", usageType: "NatGateway-Hours", costUsd: 30 },
+        ],
+      })),
+      {
+        date: "2026-07-26",
+        costUsd: 180,
+        estimated: false,
+        services: [
+          { service: "EC2", usageType: "BoxUsage:t3.large", costUsd: 120 },
+          { service: "EC2", usageType: "NatGateway-Hours", costUsd: 60 },
+        ],
+      },
+    ],
+    { relativePercentage: 20, absoluteUsd: 50 },
+    new Date("2026-07-28T00:00:00.000Z"),
+  );
+
+  assert.ok(report);
+  assert.equal(report.topDrivers.length, 1);
+  assert.equal(report.topDrivers[0].service, "EC2");
+  assert.equal(report.topDrivers[0].usageType, null);
+  assert.equal(report.topDrivers[0].changeUsd, 80);
+  assert.deepEqual(
+    report.costIncreases.map((item) => item.usageType),
+    ["BoxUsage:t3.large", "NatGateway-Hours"],
+  );
+});
+
+test("does not calculate a percentage from a negative baseline", () => {
+  const report = analyzeDailyCosts(
+    { id: "prd", name: "Production" },
+    [
+      point("2026-07-12", -100),
+      point("2026-07-19", -100),
+      point("2026-07-26", -20),
+    ],
+    { relativePercentage: 20, absoluteUsd: 50 },
+    new Date("2026-07-28T00:00:00.000Z"),
+  );
+
+  assert.ok(report);
+  assert.equal(report.weekdayChangeUsd, 80);
+  assert.equal(report.weekdayChangePercentage, null);
+  assert.equal(report.costIncreases[0].increaseUsd, 80);
+  assert.equal(report.costIncreases[0].increasePercentage, null);
+  assert.equal(report.costIncreases[0].isNew, false);
+});
+
+test("counts a disappearing credit as a cost increase", () => {
+  const baseline = (date: string): DailyCostPoint => ({
+    date,
+    costUsd: -100,
+    estimated: false,
+    services: [
+      { service: "Credits", usageType: "EnterpriseCredit", costUsd: -100 },
+    ],
+  });
+  const report = analyzeDailyCosts(
+    { id: "prd", name: "Production" },
+    [
+      baseline("2026-07-12"),
+      baseline("2026-07-19"),
+      {
+        date: "2026-07-26",
+        costUsd: 0,
+        estimated: false,
+        services: [],
+      },
+    ],
+    { relativePercentage: 20, absoluteUsd: 50 },
+    new Date("2026-07-28T00:00:00.000Z"),
+  );
+
+  assert.ok(report);
+  assert.equal(report.costIncreases[0].service, "Credits");
+  assert.equal(report.costIncreases[0].basisCostUsd, 0);
+  assert.equal(report.costIncreases[0].increaseUsd, 100);
+  assert.equal(report.costIncreases[0].isNew, false);
 });

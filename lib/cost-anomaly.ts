@@ -1,11 +1,13 @@
 import {
   CostExplorerClient,
   GetCostAndUsageCommand,
+  type GetCostAndUsageResponse,
 } from "@aws-sdk/client-cost-explorer";
 import type { AwsEnvironmentConfig } from "./aws-config";
 import type {
   CostAnomalyReport,
   CostDriver,
+  CostIncreaseDetail,
   DailyCostPoint,
   DailyServiceCost,
 } from "./cloudboard";
@@ -59,7 +61,7 @@ function daysBetween(later: string, earlier: string) {
 }
 
 function percentageChange(current: number, baseline: number | null) {
-  if (baseline === null || baseline === 0) {
+  if (baseline === null || baseline <= 0) {
     return null;
   }
   return rounded(((current - baseline) / baseline) * 100);
@@ -96,39 +98,101 @@ export function costAnomalyThresholds(): CostAnomalyThresholds {
   };
 }
 
-function topDrivers(
+function indexedCosts(
+  items: DailyServiceCost[],
+  keyFor: (item: DailyServiceCost) => string,
+) {
+  const index = new Map<string, number>();
+  for (const item of items) {
+    const key = keyFor(item);
+    index.set(key, (index.get(key) ?? 0) + item.costUsd);
+  }
+  return index;
+}
+
+export function costReportMinimumIntervalMs() {
+  const seconds = Number(
+    process.env.CLOUDBOARD_COST_REPORT_MIN_INTERVAL_SECONDS?.trim() || "300",
+  );
+  const bounded = Number.isFinite(seconds)
+    ? Math.min(86_400, Math.max(60, Math.floor(seconds)))
+    : 300;
+  return bounded * 1_000;
+}
+
+function costDrivers(
   current: DailyCostPoint,
   baselinePoints: DailyCostPoint[],
+  detailByUsageType: boolean,
 ): CostDriver[] {
-  const services = new Map<string, number[]>();
+  const keyFor = (item: DailyServiceCost) =>
+    detailByUsageType
+      ? `${item.service}\u0000${item.usageType ?? ""}`
+      : item.service;
+  const baselineIndexes = baselinePoints.map(
+    (point) => indexedCosts(point.services, keyFor),
+  );
+  const currentIndex = indexedCosts(current.services, keyFor);
+  const labels = new Map<string, DailyServiceCost>();
   for (const point of baselinePoints) {
-    for (const item of point.services) {
-      const values = services.get(item.service) ?? [];
-      values.push(item.costUsd);
-      services.set(item.service, values);
-    }
+    for (const item of point.services) labels.set(keyFor(item), item);
   }
-
-  return current.services
-    .map((item) => {
-      const baselineCost = median(services.get(item.service) ?? []);
+  for (const item of current.services) labels.set(keyFor(item), item);
+  const keys = new Set([
+    ...currentIndex.keys(),
+    ...baselineIndexes.flatMap((index) => [...index.keys()]),
+  ]);
+  return [...keys]
+    .map((key) => {
+      const currentCost = currentIndex.get(key) ?? 0;
+      const item = labels.get(key)!;
+      const baselineCost = median(
+        baselineIndexes.map((index) => index.get(key) ?? 0),
+      );
       return {
         service: item.service,
-        costUsd: rounded(item.costUsd),
+        usageType: detailByUsageType ? item.usageType : null,
+        costUsd: rounded(currentCost),
         baselineCostUsd:
           baselineCost === null ? null : rounded(baselineCost),
+        baselineOccurrences: baselineIndexes.filter((index) => index.has(key))
+          .length,
         changeUsd:
           baselineCost === null
             ? null
-            : rounded(item.costUsd - baselineCost),
+            : rounded(currentCost - baselineCost),
       };
     })
     .sort(
       (left, right) =>
         (right.changeUsd ?? right.costUsd) -
         (left.changeUsd ?? left.costUsd),
+    );
+}
+
+function costIncreases(drivers: CostDriver[]): CostIncreaseDetail[] {
+  return drivers
+    .filter(
+      (driver): driver is CostDriver & {
+        baselineCostUsd: number;
+        changeUsd: number;
+      } =>
+        driver.baselineCostUsd !== null &&
+        driver.changeUsd !== null &&
+        driver.changeUsd > 0,
     )
-    .slice(0, 5);
+    .map((driver) => ({
+      service: driver.service,
+      usageType: driver.usageType,
+      basisCostUsd: driver.costUsd,
+      weekdayMedianCostUsd: driver.baselineCostUsd,
+      increaseUsd: driver.changeUsd,
+      increasePercentage: percentageChange(
+        driver.costUsd,
+        driver.baselineCostUsd,
+      ),
+      isNew: driver.baselineOccurrences === 0,
+    }));
 }
 
 export function analyzeDailyCosts(
@@ -167,6 +231,8 @@ export function analyzeDailyCosts(
   const previousBasisChange = previous
     ? rounded(current.costUsd - previous.costUsd)
     : null;
+  const serviceDrivers = costDrivers(current, baselinePoints, false);
+  const detailedDrivers = costDrivers(current, baselinePoints, true);
   const hasEnoughData = baselinePoints.length >= 2;
   const isAnomaly =
     hasEnoughData &&
@@ -196,6 +262,7 @@ export function analyzeDailyCosts(
     freshnessDays: costFreshnessDays(current.date, now),
     costIsEstimated: current.estimated,
     metric,
+    costDetailsVersion: 1,
     status,
     totalCostUsd: rounded(current.costUsd),
     weekdayMedianUsd:
@@ -212,7 +279,8 @@ export function analyzeDailyCosts(
     ),
     baselineDates: baselinePoints.map((point) => point.date),
     thresholds,
-    topDrivers: topDrivers(current, baselinePoints),
+    topDrivers: serviceDrivers.slice(0, 5),
+    costIncreases: hasEnoughData ? costIncreases(detailedDrivers) : [],
     message,
   };
 }
@@ -234,58 +302,94 @@ export async function fetchDailyCosts(
     maxAttempts: 2,
   });
   const points = new Map<string, DailyCostPoint>();
+  const deadline = Date.now() + 60_000;
+  const requestSignal = () =>
+    AbortSignal.timeout(Math.max(1, deadline - Date.now()));
   let nextPageToken: string | undefined;
 
+  // Fetch cheap daily totals first. Detailed SERVICE x USAGE_TYPE data is only
+  // needed for the selected basis date and its four weekday baselines.
   do {
     const response = await client.send(
       new GetCostAndUsageCommand({
         TimePeriod: costQueryWindow(now),
         Granularity: "DAILY",
         Metrics: [metric],
-        GroupBy: [{ Type: "DIMENSION", Key: "SERVICE" }],
         NextPageToken: nextPageToken,
       }),
+      { abortSignal: requestSignal() },
     );
     for (const result of response.ResultsByTime ?? []) {
       const date = result.TimePeriod?.Start;
       if (!date) {
         continue;
       }
-      const current = points.get(date) ?? {
-        date,
-        costUsd: 0,
-        estimated: result.Estimated !== false,
-        services: [],
-      };
-      const services = new Map(
-        current.services.map((item) => [item.service, item.costUsd]),
-      );
-      for (const group of result.Groups ?? []) {
-        const service = group.Keys?.[0];
-        if (!service) {
-          continue;
-        }
-        services.set(
-          service,
-          (services.get(service) ?? 0) +
-            amount(group.Metrics?.[metric]?.Amount),
-        );
-      }
-      const mergedServices: DailyServiceCost[] = [...services].map(
-        ([service, costUsd]) => ({ service, costUsd }),
-      );
       points.set(date, {
         date,
-        costUsd: mergedServices.reduce(
-          (sum, item) => sum + item.costUsd,
-          0,
-        ),
-        estimated: current.estimated || result.Estimated !== false,
-        services: mergedServices,
+        costUsd: amount(result.Total?.[metric]?.Amount),
+        estimated: result.Estimated !== false,
+        services: [],
       });
     }
     nextPageToken = response.NextPageToken;
   } while (nextPageToken);
+
+  const expectedBasisDate = costBasisDate(now);
+  const basisDate = [...points.keys()]
+    .filter((date) => date <= expectedBasisDate)
+    .sort((left, right) => left.localeCompare(right))
+    .at(-1);
+  if (!basisDate) return [];
+
+  const detailDates = [0, 7, 14, 21, 28]
+    .map((days) => shiftDate(basisDate, -days))
+    .filter((date) => points.has(date));
+  for (const date of detailDates) {
+    const services = new Map<string, DailyServiceCost>();
+    nextPageToken = undefined;
+    do {
+      const response: GetCostAndUsageResponse = await client.send(
+        new GetCostAndUsageCommand({
+          TimePeriod: { Start: date, End: shiftDate(date, 1) },
+          Granularity: "DAILY",
+          Metrics: [metric],
+          GroupBy: [
+            { Type: "DIMENSION", Key: "SERVICE" },
+            { Type: "DIMENSION", Key: "USAGE_TYPE" },
+          ],
+          NextPageToken: nextPageToken,
+        }),
+        { abortSignal: requestSignal() },
+      );
+      for (const result of response.ResultsByTime ?? []) {
+        for (const group of result.Groups ?? []) {
+          const service = group.Keys?.[0];
+          const usageType = group.Keys?.[1] || null;
+          if (!service) continue;
+
+          const key = `${service}\u0000${usageType ?? ""}`;
+          const existing = services.get(key);
+          services.set(key, {
+            service,
+            usageType,
+            costUsd:
+              (existing?.costUsd ?? 0) +
+              amount(group.Metrics?.[metric]?.Amount),
+          });
+        }
+      }
+      nextPageToken = response.NextPageToken;
+    } while (nextPageToken);
+
+    const point = points.get(date);
+    if (point) {
+      point.services = [...services.values()];
+      point.costUsd = point.services.reduce(
+        (sum, item) => sum + item.costUsd,
+        0,
+      );
+    }
+  }
 
   return [...points.values()].sort((left, right) =>
     left.date.localeCompare(right.date),

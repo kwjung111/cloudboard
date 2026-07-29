@@ -136,6 +136,7 @@ export type CostDataStatus = "ready" | "delayed";
 
 export interface DailyServiceCost {
   service: string;
+  usageType: string | null;
   costUsd: number;
 }
 
@@ -148,9 +149,21 @@ export interface DailyCostPoint {
 
 export interface CostDriver {
   service: string;
+  usageType: string | null;
   costUsd: number;
   baselineCostUsd: number | null;
+  baselineOccurrences: number;
   changeUsd: number | null;
+}
+
+export interface CostIncreaseDetail {
+  service: string;
+  usageType: string | null;
+  basisCostUsd: number;
+  weekdayMedianCostUsd: number;
+  increaseUsd: number;
+  increasePercentage: number | null;
+  isNew: boolean;
 }
 
 export interface CostAnomalyReport {
@@ -163,6 +176,7 @@ export interface CostAnomalyReport {
   freshnessDays: number;
   costIsEstimated: boolean;
   metric: "NetAmortizedCost";
+  costDetailsVersion: 0 | 1;
   status: CostAnomalyStatus;
   totalCostUsd: number;
   weekdayMedianUsd: number | null;
@@ -178,16 +192,21 @@ export interface CostAnomalyReport {
     absoluteUsd: number;
   };
   topDrivers: CostDriver[];
+  costIncreases: CostIncreaseDetail[];
   message: string;
 }
 
 export interface CostReportResponse {
-  report: CostAnomalyReport | null;
+  report: CostReportSummary | null;
 }
+
+export type CostReportSummary = Omit<CostAnomalyReport, "costIncreases"> & {
+  costIncreaseCount: number;
+};
 
 export interface CostReportRunResponse {
   generatedAt: string;
-  reports: CostAnomalyReport[];
+  reports: CostReportSummary[];
   errors: Array<{ environmentId: string; message: string }>;
 }
 
@@ -231,6 +250,14 @@ export interface AiAuditReport {
     dataStatus: CostDataStatus | "unavailable";
     freshnessDays: number | null;
   };
+  costChanges: {
+    comparison: "same-weekday-median";
+    comparisonAvailable: boolean;
+    basisDate: string | null;
+    reportGeneratedAt: string | null;
+    baselineDates: string[];
+    totalItems: number;
+  };
   cost: AiAuditSummary;
   resourceChanges: AiAuditSummary;
   evidence: AiAuditEvidence[];
@@ -247,6 +274,17 @@ export interface AiAuditRunResponse {
   generatedAt: string;
   reports: AiAuditReport[];
   errors: Array<{ environmentId: string; message: string }>;
+}
+
+export interface CostDetailPageResponse {
+  basisDate: string;
+  reportGeneratedAt: string;
+  comparisonAvailable: boolean;
+  cursor: number;
+  nextCursor: number | null;
+  limit: number;
+  total: number;
+  items: CostIncreaseDetail[];
 }
 
 export interface EnvironmentReport {
@@ -273,9 +311,11 @@ export interface ApiError {
   error: string;
   code:
     | "UNAUTHORIZED"
+    | "INVALID_REQUEST"
     | "INVALID_ENVIRONMENT"
     | "ENVIRONMENT_EXISTS"
     | "ENVIRONMENT_NOT_FOUND"
+    | "REPORT_NOT_FOUND"
     | "CONFIGURATION_ERROR"
     | "INTERNAL_ERROR";
 }
