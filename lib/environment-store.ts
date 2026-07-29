@@ -99,29 +99,61 @@ function databasePath() {
 }
 
 function migrate(database: DatabaseInstance) {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      version INTEGER PRIMARY KEY,
-      applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    );
+  database.transaction(() => {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
 
-    CREATE TABLE IF NOT EXISTS app_metadata (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
+      CREATE TABLE IF NOT EXISTS app_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
 
-    CREATE TABLE IF NOT EXISTS environments (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      group_name TEXT NOT NULL,
-      regions_json TEXT NOT NULL,
-      credential_ref TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    );
+      CREATE TABLE IF NOT EXISTS environments (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        group_name TEXT NOT NULL,
+        regions_json TEXT NOT NULL,
+        credential_ref TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
 
-    INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
-  `);
+      INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
+
+      CREATE TABLE IF NOT EXISTS cost_anomaly_reports (
+        environment_id TEXT NOT NULL,
+        basis_date TEXT NOT NULL,
+        generated_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        report_json TEXT NOT NULL,
+        PRIMARY KEY (environment_id, basis_date),
+        FOREIGN KEY (environment_id) REFERENCES environments(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_cost_anomaly_reports_latest
+        ON cost_anomaly_reports (environment_id, basis_date DESC);
+
+      INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
+
+      CREATE TABLE IF NOT EXISTS ai_audit_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        environment_id TEXT NOT NULL,
+        generated_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        model TEXT NOT NULL,
+        report_json TEXT NOT NULL,
+        FOREIGN KEY (environment_id) REFERENCES environments(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ai_audit_reports_latest
+        ON ai_audit_reports (environment_id, generated_at DESC);
+
+      INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);
+    `);
+  })();
 }
 
 function bootstrapInputs(): EnvironmentInput[] {

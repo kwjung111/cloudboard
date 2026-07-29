@@ -6,24 +6,7 @@ interface CostReportRow {
 }
 
 function database() {
-  const instance = getCloudboardDatabase();
-  instance.exec(`
-    CREATE TABLE IF NOT EXISTS cost_anomaly_reports (
-      environment_id TEXT NOT NULL,
-      basis_date TEXT NOT NULL,
-      generated_at TEXT NOT NULL,
-      status TEXT NOT NULL,
-      report_json TEXT NOT NULL,
-      PRIMARY KEY (environment_id, basis_date),
-      FOREIGN KEY (environment_id) REFERENCES environments(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_cost_anomaly_reports_latest
-      ON cost_anomaly_reports (environment_id, basis_date DESC);
-
-    INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
-  `);
-  return instance;
+  return getCloudboardDatabase();
 }
 
 export function saveCostAnomalyReport(report: CostAnomalyReport) {

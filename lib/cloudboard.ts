@@ -187,6 +187,58 @@ export interface CostReportRunResponse {
   errors: Array<{ environmentId: string; message: string }>;
 }
 
+export interface AiAuditEvidence {
+  id: string;
+  source: "inventory" | "cost-explorer" | "cloudtrail" | "aws-config";
+  kind:
+    | "inventory-overview"
+    | "cost-analysis"
+    | "cloudtrail-change-event"
+    | "cloudtrail-failed-event"
+    | "cloudtrail-query-window"
+    | "cloudtrail-query-incomplete"
+    | "config-capture"
+    | "config-query-window"
+    | "config-query-incomplete"
+    | "config-change-history"
+    | "config-no-change-history";
+  label: string;
+  detail: string;
+  observedAt: string | null;
+}
+
+export interface AiAuditSummary {
+  status: "normal" | "attention" | "critical" | "unavailable";
+  headline: string;
+  summary: string;
+  highlights: string[];
+  evidenceIds: string[];
+}
+
+export interface AiAuditReport {
+  environmentId: EnvironmentId;
+  environmentName: string;
+  generatedAt: string;
+  status: "ready" | "partial" | "failed";
+  model: string;
+  cost: AiAuditSummary;
+  resourceChanges: AiAuditSummary;
+  evidence: AiAuditEvidence[];
+  limitations: string[];
+  toolCalls: number;
+}
+
+export interface AiAuditResponse {
+  report: AiAuditReport | null;
+  configured: boolean;
+}
+
+export interface AiAuditRunResponse {
+  generatedAt: string;
+  reports: AiAuditReport[];
+  errors: Array<{ environmentId: string; message: string }>;
+}
+
 export interface EnvironmentReport {
   id: EnvironmentId;
   name: string;

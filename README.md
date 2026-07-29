@@ -1,22 +1,22 @@
 # CloudBoard
 
-AWS 계정의 RI와 Savings Plans 성과를 읽기 전용으로 조회하는 비용 거버넌스
+AWS 계정의 비용과 자원 변경을 읽기 전용으로 조사하고 AI가 짧게 요약하는
 대시보드입니다.
 
-## 핵심 지표
+## 화면에 표시하는 내용
 
-- Coverage: 전체 적격 사용량 중 RI 또는 Savings Plans 할인이 적용된 비율
-- Utilization: 구매한 약정 중 실제 워크로드가 소비한 비율
-- Net Savings: 동일 사용량의 On-Demand 비용과 비교한 최근 30일 순절감액
-- Expiration: 활성 RI와 Savings Plans의 만료일 및 남은 일수
+- 비용 변동: 최신 완료 비용일을 동일 요일 중앙값과 직전 비용일에 비교한 요약
+- 자원 변경: 최근 24시간 CloudTrail·AWS Config에서 확인한 생성·수정·삭제 요약
 
-## 일일 비용 이상 리포트
+기존의 RI/SP 표, 적용률 카드, 차트, 위험 점수, 권장 조치 화면은 제공하지 않습니다.
+RI·Savings Plans 데이터는 비용 변동의 원인을 설명할 때만 내부 근거로 사용합니다.
 
-AI 모델 없이 AWS Cost Explorer의 `NetAmortizedCost`를 통계 기준으로
-분석합니다. 진행 중인 UTC 오늘을 제외한 가장 최근 비용 일자를 기준으로
-직전 일자와 최근 4주의 동일 요일 중앙값을 함께 보여줍니다. 현재 청구 월은
-AWS가 `Estimated=true`로 반환하므로 화면에 `당월 잠정치`로 명시하며,
-이 값을 일별 데이터 미완료 여부로 사용하지 않습니다.
+## 비용 비교 기준
+
+AWS Cost Explorer의 `NetAmortizedCost`를 통계 기준으로 분석합니다. 진행 중인
+UTC 오늘을 제외한 가장 최근 비용 일자를 기준으로 직전 일자와 최근 4주의 동일
+요일 중앙값을 AI 근거로 제공합니다. 현재 청구 월의 `Estimated=true`는 일별
+데이터 미완료 여부로 사용하지 않습니다.
 
 기본 이상 판정은 동일 요일 중앙값보다 20% 이상이면서 100 USD 이상 증가한
 경우입니다. 두 기준은 환경 변수로 조정할 수 있습니다.
@@ -31,11 +31,48 @@ CLOUDBOARD_COST_ANOMALY_ABSOLUTE_USD=100
 기준일 조합으로 저장되어 같은 기준일이 중복 추가되지 않습니다. 알림 채널
 연동은 저장된 리포트를 그대로 사용하도록 후속 단계로 분리되어 있습니다.
 
-Coverage가 높을수록 더 많은 사용량에 할인이 적용됩니다. Utilization이 높을수록
-구매한 약정을 낭비하지 않고 있다는 뜻입니다. 안정적인 약정 운영을 판단하려면
-두 지표를 함께 봐야 합니다.
+## AI 기반 AWS 감사
 
-## 지원 범위
+OpenAI Responses API의 도구 호출로 다음 근거를 직접 조사합니다.
+
+- 현재 실행 자원, RI·Savings Plans 적용률·사용률·만료일
+- 최신 완료 비용일, 동일 요일 중앙값, 직전 비용일과 서비스별 비용 변동
+- 최근 CloudTrail 쓰기 이벤트의 행위자·API·대상 자원
+- 최근 AWS Config 기록과 의심 자원의 이전 구성 차이
+
+AI는 기본 네 가지 근거 도구를 모두 호출한 뒤 `비용 변동`과 `자원 변경` 두 요약만
+반환합니다. 각 요약은 실제 도구가 반환한 근거 ID를 인용해야 하며, 유효한 근거가
+없으면 서버가 내용을 제거하고 `확인 불가`로 바꿉니다. AWS Config의 최근 캡처
+시각만으로는 변경으로 판정하지 않고 CloudTrail 또는 구성 이력으로 재확인합니다.
+AWS 문자열은 명령이 아닌 신뢰하지 않는 데이터로 취급하며, 자격 증명·CloudTrail
+요청 파라미터·구성 값은 모델에 전달하지 않습니다. AWS Config 비교 결과는 변경된
+필드 경로와 값의 자료형만 전달합니다.
+
+```dotenv
+OPENAI_API_KEY=
+CLOUDBOARD_AI_MODEL=gpt-5.6-sol
+CLOUDBOARD_AI_AUDIT_MAX_TOOL_CALLS=16
+CLOUDBOARD_AI_AUDIT_MIN_INTERVAL_SECONDS=300
+CLOUDBOARD_AI_AUDIT_TIMEOUT_MS=210000
+CLOUDBOARD_AI_AUDIT_ENABLED=true
+CLOUDBOARD_ACCESS_TOKEN=<충분히 긴 임의 값>
+```
+
+`OPENAI_API_KEY`는 서버 또는 Secret Manager에서만 주입합니다. 키가 없으면 화면에
+연결 필요 상태가 표시됩니다. 수동 생성은
+`POST /api/reports/ai-audit?environment=dev`, 최신 저장본 조회는
+`GET /api/reports/ai-audit?environment=dev`입니다.
+
+AI 조회·생성 API는 비용 및 자원 변경 근거를 다루고 유료 모델 호출을 실행하므로
+`CLOUDBOARD_ACCESS_TOKEN`이 반드시 필요합니다. 두 요청 모두 같은 값을
+`x-cloudboard-token` 헤더로 전달합니다. 동일 환경의 동시 실행은 한 번으로 합치고,
+기본 5분 동안은 저장된 최신 결과를 재사용합니다.
+
+`CLOUDBOARD_AI_AUDIT_ENABLED=true`이면 reporter가 기존 비용 리포트와 함께 매일
+오전 6시(Asia/Seoul)에 AI 감사를 실행합니다. 기본값은 `false`이므로 OpenAI 키와
+AWS Config/CloudTrail 권한을 설정한 뒤 명시적으로 켜야 합니다.
+
+## 내부 조회 범위
 
 - EC2, RDS, ElastiCache, OpenSearch, Redshift 실행 자원과 활성 RI
 - 서비스별 RI Coverage
@@ -58,6 +95,7 @@ Cost Explorer 조회 기간은 오늘을 제외한 최근 30개의 완료된 UTC
       "Effect": "Allow",
       "Action": [
         "sts:GetCallerIdentity",
+        "ce:GetCostAndUsage",
         "ce:GetReservationCoverage",
         "ce:GetReservationUtilization",
         "ce:GetSavingsPlansCoverage",
@@ -74,7 +112,10 @@ Cost Explorer 조회 기간은 오늘을 제외한 최근 30개의 완료된 UTC
         "es:DescribeDomains",
         "es:DescribeReservedInstances",
         "redshift:DescribeClusters",
-        "redshift:DescribeReservedNodes"
+        "redshift:DescribeReservedNodes",
+        "cloudtrail:LookupEvents",
+        "config:SelectResourceConfig",
+        "config:GetResourceConfigHistory"
       ],
       "Resource": "*"
     }
@@ -85,6 +126,10 @@ Cost Explorer 조회 기간은 오늘을 제외한 최근 30개의 완료된 UTC
 조직의 관리 계정과 멤버 계정은 Cost Explorer에서 보이는 범위가 다를 수 있습니다.
 조직 전체 지표가 필요하면 관리 계정 또는 비용 데이터 조회가 위임된 계정을
 사용하세요.
+
+AWS Config 레코더가 활성화되지 않았거나 지원 자원을 기록하지 않으면 AI 감사에는
+구성 이력이 없다는 제한이 표시됩니다. CloudTrail Event History는 계정·리전별로
+제공되는 범위 안에서 조회합니다.
 
 ## Docker 실행
 
@@ -173,11 +218,15 @@ CLOUDBOARD_CREDENTIALS_DIR=./credentials
 AWS_DEV_ACCESS_KEY_ID=
 AWS_DEV_SECRET_ACCESS_KEY=
 AWS_DEV_SESSION_TOKEN=
+OPENAI_API_KEY=
+CLOUDBOARD_AI_MODEL=gpt-5.6-sol
+CLOUDBOARD_AI_AUDIT_ENABLED=true
+CLOUDBOARD_ACCESS_TOKEN=<충분히 긴 임의 값>
 ```
 
 운영 환경에서는 정적 키보다 워크로드 아이덴티티와 AssumeRole을 권장합니다.
-`CLOUDBOARD_ACCESS_TOKEN`을 설정하면 API가 `x-cloudboard-token` 헤더를
-요구합니다.
+`CLOUDBOARD_ACCESS_TOKEN`을 설정하면 일반 API도 `x-cloudboard-token` 헤더를
+요구합니다. AI 조회·생성 API에서는 이 값이 선택이 아니라 필수입니다.
 
 ## GitOps 배포
 
